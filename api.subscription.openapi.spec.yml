@@ -1,0 +1,430 @@
+openapi: 3.1.0
+info:
+  title: Nexxus API - Subscription Management
+  version: 1.0.0
+  description: |
+    API endpoints for managing real-time subscriptions in the Nexxus platform.
+
+    Subscriptions allow clients to receive real-time notifications when models
+    matching specific criteria are created, updated, or deleted.
+
+    Subscriptions can be filtered using the FilterQuery DSL to only receive
+    updates for specific objects (e.g., tasks with priority='high').
+  contact:
+    name: Nexxus API Support
+  license:
+    name: ISC
+
+servers:
+  - url: http://localhost:3000
+    description: Local development server
+
+tags:
+  - name: Subscription
+    description: Real-time subscription management
+
+security:
+  - BearerAuth: []
+
+paths:
+  /subscription/:
+    post:
+      tags:
+        - Subscription
+      summary: Subscribe to a channel and optionally retrieve data
+      description: |
+        Creates a subscription for the device to receive real-time updates.
+
+        The subscription is tied to the device specified in the `nxx-device-id` header.
+        Device must be connected to a transport (e.g., WebSocket) to receive notifications.
+
+        If `getOnly` is true, only retrieves data without creating a subscription.
+      operationId: subscribe
+      parameters:
+        - $ref: '#/components/parameters/AppId'
+        - $ref: '#/components/parameters/DeviceId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubscriptionRequest'
+            examples:
+              allTasks:
+                summary: Subscribe to all tasks
+                value:
+                  model: "task"
+                  limit: 10
+                  offset: 0
+              userTasks:
+                summary: Subscribe to current user's tasks
+                value:
+                  model: "task"
+                  userId: true
+                  limit: 10
+                  offset: 0
+              specificTask:
+                summary: Subscribe to a specific task by ID
+                value:
+                  model: "task"
+                  id: "task_abc123"
+              filteredTasks:
+                summary: Subscribe to high-priority tasks
+                value:
+                  model: "task"
+                  filter:
+                    priority:
+                      $eq: "high"
+                  limit: 20
+                  offset: 0
+              complexFilter:
+                summary: Subscribe with complex filter
+                value:
+                  model: "task"
+                  filter:
+                    $and:
+                      - status:
+                          $in: ["todo", "in_progress"]
+                      - priority:
+                          $eq: "high"
+                  limit: 10
+              getOnlyMode:
+                summary: Get data without subscribing
+                value:
+                  model: "task"
+                  getOnly: true
+                  limit: 50
+                  offset: 0
+      responses:
+        '201':
+          description: Subscription created successfully (or data retrieved if getOnly=true)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubscriptionResponse'
+              examples:
+                withSubscription:
+                  summary: Subscription created with data
+                  value:
+                    channelId: "nxx:subscription:myapp:task:partition:0"
+                    items:
+                      - id: "task_abc123"
+                        type: "task"
+                        appId: "myapp"
+                        userId: "user_789"
+                        title: "Complete documentation"
+                        status: "in_progress"
+                        priority: "high"
+                        createdAt: "2026-01-30T10:00:00.000Z"
+                        updatedAt: "2026-01-30T14:30:00.000Z"
+                      - id: "task_def456"
+                        type: "task"
+                        appId: "myapp"
+                        userId: "user_789"
+                        title: "Review PRs"
+                        status: "todo"
+                        priority: "high"
+                        createdAt: "2026-01-30T11:00:00.000Z"
+                        updatedAt: "2026-01-30T11:00:00.000Z"
+                getOnlyMode:
+                  summary: Data retrieval without subscription
+                  value:
+                    items:
+                      - id: "task_abc123"
+                        type: "task"
+                        appId: "myapp"
+                        userId: "user_789"
+                        title: "Complete documentation"
+                        status: "in_progress"
+                        priority: "high"
+                        createdAt: "2026-01-30T10:00:00.000Z"
+                        updatedAt: "2026-01-30T14:30:00.000Z"
+                emptyResult:
+                  summary: No matching items
+                  value:
+                    channelId: "nxx:subscription:myapp:task:filter:abc123:partition:0"
+                    items: []
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/DeviceNotConnected'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        JWT token obtained from authentication endpoints.
+        Required when authentication is enabled in the API configuration.
+
+  parameters:
+    AppId:
+      name: nxx-app-id
+      in: header
+      required: true
+      schema:
+        type: string
+      description: Application ID identifying the tenant/application context
+      example: "myapp"
+
+    DeviceId:
+      name: nxx-device-id
+      in: header
+      required: true
+      schema:
+        type: string
+      description: Device ID for identifying the subscribing device
+      example: "dev_abc123xyz"
+
+  schemas:
+    SubscriptionRequest:
+      type: object
+      required:
+        - model
+      properties:
+        model:
+          type: string
+          description: Model type from the application schema
+          example: "task"
+        userId:
+          type: boolean
+          description: |
+            If true, filters results to models owned by the authenticated user.
+            Only available when authentication is enabled.
+            Cannot be used together with `id`.
+          example: true
+        id:
+          type: string
+          description: |
+            Filter by specific model instance ID.
+            Cannot be used together with `userId`.
+          example: "task_abc123"
+        filter:
+          type: object
+          description: |
+            FilterQuery DSL for advanced filtering.
+            Supports operators: $eq, $ne, $gt, $gte, $lt, $lte, $in, $and, $or.
+            Field paths support dot notation for nested fields.
+          additionalProperties: true
+          example:
+            $and:
+              - status:
+                  $in: ["todo", "in_progress"]
+              - priority:
+                  $eq: "high"
+        getOnly:
+          type: boolean
+          default: false
+          description: |
+            If true, retrieves data without creating a subscription.
+            Useful for one-time queries.
+          example: false
+        limit:
+          type: integer
+          default: 10
+          minimum: 1
+          maximum: 100
+          description: Maximum number of items to return
+          example: 10
+        offset:
+          type: integer
+          default: 0
+          minimum: 0
+          description: Number of items to skip (for pagination)
+          example: 0
+
+    SubscriptionResponse:
+      type: object
+      required:
+        - items
+      properties:
+        channelId:
+          type: string
+          description: |
+            Unique subscription channel identifier.
+            Only present when `getOnly` is false.
+            Used internally to route real-time updates.
+          example: "nxx:subscription:myapp:task:partition:0"
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AppModel'
+          description: Array of model instances matching the subscription criteria
+
+    AppModel:
+      type: object
+      required:
+        - id
+        - type
+        - appId
+        - createdAt
+        - updatedAt
+      properties:
+        id:
+          type: string
+          description: Unique model instance identifier
+          example: "task_abc123"
+        type:
+          type: string
+          description: Model type as defined in application schema
+          example: "task"
+        appId:
+          type: string
+          description: Application ID this model belongs to
+          example: "myapp"
+        userId:
+          type: string
+          description: ID of the user who owns this model (optional for some model types)
+          example: "user_789"
+        createdAt:
+          type: string
+          format: date-time
+          description: Timestamp when model was created
+          example: "2026-01-30T10:00:00.000Z"
+        updatedAt:
+          type: string
+          format: date-time
+          description: Timestamp of last model update
+          example: "2026-01-30T14:30:00.000Z"
+      additionalProperties: true
+      description: |
+        Application-specific model with custom fields based on the schema.
+        Only common fields are documented here; actual models contain additional
+        fields defined by the application developer.
+
+    Error:
+      type: object
+      required:
+        - error
+        - message
+      properties:
+        error:
+          type: string
+          description: Exception class name
+          example: "InvalidParametersException"
+        message:
+          type: string
+          description: Human-readable error message
+          example: "Missing required parameter: model"
+        stack:
+          type: string
+          description: Stack trace (only in development mode)
+
+  responses:
+    BadRequest:
+      description: Invalid request parameters
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            missingModel:
+              summary: Missing required model parameter
+              value:
+                error: "InvalidParametersException"
+                message: "Missing required parameter: model"
+            invalidFilter:
+              summary: Invalid filter query syntax
+              value:
+                error: "InvalidParametersException"
+                message: "Invalid filter query: unknown operator '$invalid'"
+            bothUserIdAndId:
+              summary: Cannot use both userId and id
+              value:
+                error: "InvalidParametersException"
+                message: "Cannot use both 'userId' and 'id' parameters"
+            userIdWithoutAuth:
+              summary: userId requires authentication
+              value:
+                error: "InvalidParametersException"
+                message: "Parameter 'userId' is only available when authentication is enabled"
+            modelNotInSchema:
+              summary: Model type not in schema
+              value:
+                error: "InvalidParametersException"
+                message: "Model type 'invalid_type' does not exist in application schema"
+
+    Unauthorized:
+      description: Authentication required or invalid token
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            noAuthPresent:
+              summary: No authentication provided
+              value:
+                error: "NoAuthPresentException"
+                message: "Authentication required"
+            tokenExpired:
+              summary: JWT token expired
+              value:
+                error: "UserTokenExpiredException"
+                message: "Authentication token has expired"
+            authFailed:
+              summary: Authentication failed
+              value:
+                error: "UserAuthenticationFailedException"
+                message: "Invalid authentication credentials"
+
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            applicationNotFound:
+              summary: Application does not exist
+              value:
+                error: "ApplicationNotFoundException"
+                message: "Application 'myapp' not found"
+            modelNotFound:
+              summary: Model instance not found (when using id parameter)
+              value:
+                error: "ModelNotFoundException"
+                message: "Model 'task_abc123' not found"
+            deviceNotFound:
+              summary: Device not found
+              value:
+                error: "NotFoundException"
+                message: "Device not found"
+
+    DeviceNotConnected:
+      description: Device is not connected to a transport
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            notConnected:
+              summary: Device not connected
+              value:
+                error: "DeviceNotConnectedException"
+                message: "Device must be connected to a transport to create subscriptions"
+
+    ServerError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            unexpected:
+              summary: Unexpected server error
+              value:
+                error: "ServerErrorException"
+                message: "An unexpected server error occurred."
+            fatal:
+              summary: Fatal error
+              value:
+                error: "ServerErrorException"
+                message: "A fatal server error occurred."

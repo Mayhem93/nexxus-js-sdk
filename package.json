@@ -1,0 +1,40 @@
+{
+  "name": "nexxus-js-client",
+  "version": "0.0.1",
+  "description": "Typescript client for Nexxus backend",
+  "main": "dist/cjs/index.js",
+  "module": "dist/esm/index.js",
+  "types": "dist/types/index.d.ts",
+  "sideEffects": false,
+  "scripts": {
+    "clean": "if exist dist rd /s /q dist",
+    "build:cjs": "tsc -p tsconfig.cjs.json",
+    "build:esm": "tsc -p tsconfig.esm.json",
+    "build:types": "tsc -p tsconfig.types.json",
+    "build": "npm run clean && npm run build:cjs && npm run build:esm && npm run build:types",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "Răzvan Botea <contact@razvanbotea.me>",
+  "license": "MPL-2.0",
+  "files": [
+    "dist/cjs/**/*",
+    "dist/esm/**/*"
+  ],
+  "devDependencies": {
+    "@tsconfig/node24": "^24.0.4",
+    "@types/eventemitter3": "^1.2.0",
+    "@types/node": "^24.9.1",
+    "@types/ws": "^8.18.1",
+    "tslib": "^2.8.1",
+    "typescript": "^6.0.0"
+  },
+  "browser": {
+    "ws": false
+  },
+  "dependencies": {
+    "dot-prop": "^10.1.0",
+    "eventemitter3": "^5.0.4",
+    "ws": "^8.19.0"
+  }
+}

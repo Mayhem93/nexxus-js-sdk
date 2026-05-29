@@ -1,0 +1,688 @@
+openapi: 3.1.0
+info:
+  title: Nexxus API - User Management & Authentication
+  version: 1.0.0
+  description: |
+    API endpoints for user registration, authentication, and profile management.
+
+    **Authentication Strategies:**
+    - Local authentication (username/password) - requires separate registration
+    - Google OAuth2 (redirects to Google login) - creates user automatically if not exists
+
+    Auth strategies are configured dynamically. Only enabled strategies are available.
+  contact:
+    name: Nexxus API Support
+  license:
+    name: ISC
+
+servers:
+  - url: http://localhost:3000
+    description: Local development server
+
+tags:
+  - name: User
+    description: User profile management
+  - name: Auth
+    description: Authentication endpoints
+
+security:
+  - BearerAuth: []
+
+paths:
+  /user/register:
+    post:
+      tags:
+        - User
+      summary: Register a new user with local authentication
+      description: |
+        Creates a new user account using local authentication (username/password).
+
+        **For OAuth authentication** (e.g., Google), users are created automatically
+        during the OAuth flow at `/auth/google`. No separate registration is needed.
+
+        Returns minimal user info (id and username) upon successful registration.
+        Use `/user/` endpoint to retrieve full profile afterwards.
+      operationId: registerUser
+      parameters:
+        - $ref: '#/components/parameters/AppId'
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserRegisterRequest'
+            examples:
+              basic:
+                summary: Basic registration
+                value:
+                  username: "john.doe@example.com"
+                  password: "SecureP@ssw0rd"
+              withDetails:
+                summary: Registration with additional details
+                value:
+                  username: "john.doe@example.com"
+                  password: "SecureP@ssw0rd"
+                  userType: "premium"
+                  firstName: "John"
+                  lastName: "Doe"
+      responses:
+        '201':
+          description: User registered successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserRegisterResponse'
+              examples:
+                success:
+                  summary: Successfully registered user
+                  value:
+                    message: "User created successfully"
+                    user:
+                      id: "506af321-6a60-4072-a998-ae107aa0e520"
+                      username: "john.doe@example.com"
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/ApplicationNotFound'
+        '409':
+          $ref: '#/components/responses/UserAlreadyExists'
+
+  /user/:
+    get:
+      tags:
+        - User
+      summary: Get current user profile
+      description: |
+        Retrieves the authenticated user's full profile information.
+      operationId: getUser
+      parameters:
+        - $ref: '#/components/parameters/AppId'
+      responses:
+        '200':
+          description: User profile retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+              examples:
+                success:
+                  summary: User profile
+                  value:
+                    id: "506af321-6a60-4072-a998-ae107aa0e520"
+                    username: "utherr.ghujax@gmail.com"
+                    userType: "default"
+                    authProviders: ["google", "local"]
+                    details:
+                      name: "Răzvan-Andrei Botea"
+                      googleId: "110327245888974165324"
+                    appId: "ffc1ecbb-e74c-4fd5-bfdc-a8c97cd61296"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/UserNotFound'
+
+    put:
+      tags:
+        - User
+      summary: Update user profile
+      description: |
+        Updates the authenticated user's profile using JsonPatch operations.
+
+        **Forbidden paths** (cannot be updated):
+        - `userType`
+        - `authProviders`
+        - `devices`
+        - `createdAt`
+        - `updatedAt`
+
+        **Password updates:** Automatically hashed and adds 'local' to authProviders if not present.
+      operationId: updateUser
+      parameters:
+        - $ref: '#/components/parameters/AppId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/JsonPatch'
+            examples:
+              updateDetails:
+                summary: Update user details
+                value:
+                  op: "replace"
+                  path: ["details.firstName", "details.lastName"]
+                  value: ["Jonathan", "Doe Jr."]
+                  metadata:
+                    appId: "myapp"
+                    id: "user_abc123"
+                    type: "user"
+              updatePassword:
+                summary: Change password
+                value:
+                  op: "replace"
+                  path: ["password"]
+                  value: ["NewSecureP@ssw0rd"]
+                  metadata:
+                    appId: "myapp"
+                    id: "user_abc123"
+                    type: "user"
+              updateUsername:
+                summary: Change username/email
+                value:
+                  op: "replace"
+                  path: ["username"]
+                  value: ["newemail@example.com"]
+                  metadata:
+                    appId: "myapp"
+                    id: "user_abc123"
+                    type: "user"
+      responses:
+        '200':
+          description: User updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UpdateResponse'
+              examples:
+                success:
+                  summary: Update confirmation
+                  value:
+                    message: "User updated successfully"
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/UserNotFound'
+
+  /auth/local:
+    post:
+      tags:
+        - Auth
+      summary: Authenticate with username and password
+      description: |
+        Authenticates a user using local credentials (username/email + password).
+
+        Returns a JWT token and minimal user info (id and username).
+
+        **Note:** Only available if local authentication is enabled in API configuration.
+        Users must be registered via `/user/register` before using this endpoint.
+      operationId: loginLocal
+      parameters:
+        - $ref: '#/components/parameters/AppId'
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LocalAuthRequest'
+            examples:
+              login:
+                summary: Login with credentials
+                value:
+                  username: "john.doe@example.com"
+                  password: "SecureP@ssw0rd"
+      responses:
+        '200':
+          description: Authentication successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+              examples:
+                success:
+                  summary: Login successful
+                  value:
+                    token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                    user:
+                      id: "506af321-6a60-4072-a998-ae107aa0e520"
+                      username: "john.doe@example.com"
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/AuthenticationFailed'
+        '404':
+          $ref: '#/components/responses/ApplicationNotFound'
+
+  /auth/google:
+    post:
+      tags:
+        - Auth
+      summary: Authenticate with Google OAuth2
+      description: |
+        Initiates Google OAuth2 authentication flow.
+
+        **This endpoint redirects the browser to Google's login page.**
+        After authentication, Google redirects back to the callback URL.
+
+        **Automatic User Creation:**
+        - If user exists → logs in and returns JWT token
+        - If user doesn't exist → creates new user with Google profile data, then returns JWT token
+
+        The `userType` parameter is used when creating new users (defaults to "default").
+        User details (name, googleId) are populated from Google profile.
+
+        **Note:** Only available if Google authentication is enabled in API configuration.
+      operationId: loginGoogle
+      parameters:
+        - $ref: '#/components/parameters/AppId'
+      security: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GoogleAuthRequest'
+            examples:
+              default:
+                summary: Login with default user type
+                value:
+                  userType: "default"
+              premium:
+                summary: Register as premium user (if not exists)
+                value:
+                  userType: "premium"
+      responses:
+        '302':
+          description: Redirect to Google OAuth login page
+          headers:
+            Location:
+              schema:
+                type: string
+              description: Google OAuth authorization URL
+              example: "https://accounts.google.com/o/oauth2/v2/auth?client_id=..."
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/InvalidAuthMethod'
+        '404':
+          $ref: '#/components/responses/ApplicationNotFound'
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        JWT token obtained from authentication endpoints (/auth/local or /auth/google).
+
+        **Usage:** Add to Authorization header: `Bearer <token>`
+
+  parameters:
+    AppId:
+      name: nxx-app-id
+      in: header
+      required: true
+      schema:
+        type: string
+      description: Application ID identifying the tenant/application context
+      example: "myapp"
+
+  schemas:
+    UserRegisterRequest:
+      type: object
+      required:
+        - username
+        - password
+      properties:
+        username:
+          type: string
+          format: email
+          description: Unique username (typically email address)
+          example: "john.doe@example.com"
+        password:
+          type: string
+          format: password
+          description: Password for local authentication (automatically hashed)
+          example: "SecureP@ssw0rd"
+        userType:
+          type: string
+          default: "default"
+          description: User type/role as defined in application schema
+          example: "default"
+      additionalProperties: true
+      description: |
+        User registration data with custom fields based on application's user detail schema.
+        Common additional fields: `firstName`, `lastName`, `phoneNumber`, etc.
+
+    UserRegisterResponse:
+      type: object
+      required:
+        - message
+        - user
+      properties:
+        message:
+          type: string
+          example: "User created successfully"
+        user:
+          type: object
+          required:
+            - id
+            - username
+          properties:
+            id:
+              type: string
+              description: Unique user identifier
+              example: "506af321-6a60-4072-a998-ae107aa0e520"
+            username:
+              type: string
+              description: User's username
+              example: "john.doe@example.com"
+
+    User:
+      type: object
+      required:
+        - id
+        - username
+        - userType
+        - authProviders
+        - details
+        - appId
+      properties:
+        id:
+          type: string
+          description: Unique user identifier
+          example: "506af321-6a60-4072-a998-ae107aa0e520"
+        username:
+          type: string
+          format: email
+          description: User's username (email)
+          example: "utherr.ghujax@gmail.com"
+        userType:
+          type: string
+          description: User type/role
+          example: "default"
+        authProviders:
+          type: array
+          items:
+            type: string
+          description: List of enabled authentication providers for this user
+          example: ["google", "local"]
+        details:
+          type: object
+          additionalProperties: true
+          description: |
+            User-specific details based on application's user detail schema.
+            Structure varies per application.
+
+            For OAuth users, includes provider-specific data (e.g., googleId, name from Google).
+          example:
+            name: "Răzvan-Andrei Botea"
+            googleId: "110327245888974165324"
+        appId:
+          type: string
+          description: Application ID this user belongs to
+          example: "ffc1ecbb-e74c-4fd5-bfdc-a8c97cd61296"
+
+    LocalAuthRequest:
+      type: object
+      required:
+        - username
+        - password
+      properties:
+        username:
+          type: string
+          format: email
+          description: User's username/email
+          example: "john.doe@example.com"
+        password:
+          type: string
+          format: password
+          description: User's password
+          example: "SecureP@ssw0rd"
+
+    GoogleAuthRequest:
+      type: object
+      properties:
+        userType:
+          type: string
+          default: "default"
+          description: |
+            User type to assign if creating a new user.
+            Must exist in application's user type schema.
+            Ignored if user already exists.
+          example: "default"
+
+    AuthResponse:
+      type: object
+      required:
+        - token
+        - user
+      properties:
+        token:
+          type: string
+          description: JWT authentication token (valid for 7 days by default)
+          example: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6IjUwNmFmMzIxLTZhNjAtNDA3Mi1hOTk4LWFlMTA3YWEwZTUyMCIsInVzZXJuYW1lIjoiam9obi5kb2VAZXhhbXBsZS5jb20iLCJ1c2VyVHlwZSI6ImRlZmF1bHQiLCJhdXRoUHJvdmlkZXJzIjpbImxvY2FsIl0sImRldGFpbHMiOnt9LCJhcHBJZCI6Im15YXBwIiwiaWF0IjoxNzM4MzE3NjAwLCJleHAiOjE3Mzg5MjI0MDAsImlzcyI6ImxvY2FsaG9zdCIsImF1ZCI6Im15YXBwIn0.signature"
+        user:
+          type: object
+          required:
+            - id
+            - username
+          properties:
+            id:
+              type: string
+              description: User ID
+              example: "506af321-6a60-4072-a998-ae107aa0e520"
+            username:
+              type: string
+              description: Username/email
+              example: "john.doe@example.com"
+
+    UpdateResponse:
+      type: object
+      required:
+        - message
+      properties:
+        message:
+          type: string
+          description: Update confirmation message
+          example: "User updated successfully"
+
+    JsonPatch:
+      type: object
+      required:
+        - op
+        - path
+        - value
+        - metadata
+      properties:
+        op:
+          type: string
+          enum:
+            - replace
+            - append
+            - prepend
+            - incr
+            - decr
+          description: |
+            Patch operation type:
+            - `replace`: Replace field values
+            - `append`: Append to array fields
+            - `prepend`: Prepend to array fields
+            - `incr`: Increment numeric fields
+            - `decr`: Decrement numeric fields
+          example: "replace"
+        path:
+          type: array
+          items:
+            type: string
+          description: |
+            Array of field paths to modify (supports dot notation for nested fields).
+            Multiple paths can be specified for batch operations.
+          example: ["details.firstName", "details.lastName"]
+        value:
+          type: array
+          items: {}
+          description: |
+            Array of values corresponding to each path.
+            Must have the same length as the `path` array.
+          example: ["Jonathan", "Doe Jr."]
+        metadata:
+          type: object
+          required:
+            - appId
+            - id
+            - type
+          properties:
+            appId:
+              type: string
+              description: Application ID
+              example: "myapp"
+            id:
+              type: string
+              description: User ID being updated
+              example: "user_abc123"
+            type:
+              type: string
+              enum:
+                - user
+              description: Model type (always "user" for user updates)
+              example: "user"
+
+    Error:
+      type: object
+      required:
+        - error
+        - message
+      properties:
+        error:
+          type: string
+          description: Exception class name
+          example: "InvalidParametersException"
+        message:
+          type: string
+          description: Human-readable error message
+          example: "Missing required parameter: username"
+        stack:
+          type: string
+          description: Stack trace (only in development mode)
+
+  responses:
+    BadRequest:
+      description: Invalid request parameters
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            missingUsername:
+              summary: Missing required username
+              value:
+                error: "InvalidParametersException"
+                message: "Missing required parameter: username"
+            missingPassword:
+              summary: Missing password for local auth
+              value:
+                error: "InvalidParametersException"
+                message: "Password is required for local authentication"
+            forbiddenPath:
+              summary: Attempting to update forbidden field
+              value:
+                error: "InvalidParametersException"
+                message: "Cannot update forbidden paths: userType, authProviders"
+            invalidPatch:
+              summary: Invalid JsonPatch format
+              value:
+                error: "InvalidParametersException"
+                message: "Invalid patch operation: path and value arrays must have the same length"
+            invalidUserType:
+              summary: User type not found
+              value:
+                error: "UserAuthenticationFailedException"
+                message: "User type \"invalid\" not found in application \"myapp\""
+
+    Unauthorized:
+      description: Authentication required or invalid token
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            noAuthPresent:
+              summary: No authentication provided
+              value:
+                error: "NoAuthPresentException"
+                message: "Authentication required"
+            tokenExpired:
+              summary: JWT token expired
+              value:
+                error: "UserTokenExpiredException"
+                message: "Authentication token has expired"
+
+    AuthenticationFailed:
+      description: Authentication credentials invalid
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            invalidCredentials:
+              summary: Invalid username or password
+              value:
+                error: "UserAuthenticationFailedException"
+                message: "Invalid credentials"
+            missingCredentials:
+              summary: Missing username or password
+              value:
+                error: "UserAuthenticationFailedException"
+                message: "Username and password are required"
+            multipleLoginDisabled:
+              summary: Auth provider not enabled for user
+              value:
+                error: "UserAuthenticationFailedException"
+                message: "User not registered for local authentication and multiple login is disabled"
+
+    InvalidAuthMethod:
+      description: Authentication method not enabled
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            authNotSupported:
+              summary: Auth strategy not configured
+              value:
+                error: "InvalidAuthMethodException"
+                message: "Authentication method not supported"
+
+    ApplicationNotFound:
+      description: Application not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            notFound:
+              summary: Application does not exist
+              value:
+                error: "ApplicationNotFoundException"
+                message: "Application 'myapp' not found"
+
+    UserNotFound:
+      description: User not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            notFound:
+              summary: User does not exist
+              value:
+                error: "NotFoundException"
+                message: "User not found"
+
+    UserAlreadyExists:
+      description: Username already taken
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            conflict:
+              summary: Username already registered
+              value:
+                error: "UserAlreadyExistsException"
+                message: "Username 'john.doe@example.com' is already registered"

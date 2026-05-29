@@ -1,0 +1,133 @@
+import { Command } from '../../Command';
+import type { NexxusClientConfig, PatchOperation } from '../../types';
+
+/**
+ * JsonPatch structure for model updates
+ */
+export interface JsonPatch {
+  /**
+   * Patch operation type
+   * - `replace`: Replace field values
+   * - `append`: Append to array fields
+   * - `prepend`: Prepend to array fields
+   * - `incr`: Increment numeric fields
+   * - `decr`: Decrement numeric fields
+   */
+  op: PatchOperation;
+
+  /**
+   * Array of field paths to modify (supports dot notation for nested fields)
+   * Multiple paths can be specified for batch operations
+   */
+  path: string[];
+
+  /**
+   * Array of values corresponding to each path
+   * Must have the same length as the `path` array
+   */
+  value: any[];
+}
+
+/**
+ * Input for updating a model instance using JsonPatch
+ */
+export interface UpdateModelInput {
+  /**
+   * Model type (e.g., "task", "project")
+   */
+  type: string;
+
+  /**
+   * JsonPatch operations to apply
+   */
+  patch: JsonPatch;
+
+  /**
+   * Model instance ID being updated (used in URL path)
+   */
+  id: string;
+}
+
+/**
+ * Async operation response
+ */
+export interface UpdateModelOutput {
+  /**
+   * Confirmation message for the queued operation
+   */
+  message: string;
+}
+
+/**
+ * Command to update a model instance using custom JsonPatch operations
+ *
+ * This operation is asynchronous - the request is queued to the Writer Worker
+ * which applies the patches and notifies subscribed clients.
+ *
+ * @example
+ * ```typescript
+ * const client = new NexxusClient({ baseUrl: 'http://localhost:3000', appId: 'myapp' });
+ * client.setAuthToken('your-jwt-token');
+ *
+ * // Replace multiple fields
+ * const command = new UpdateModelCommand({
+ *   id: 'task_abc123',
+ *   type: 'task',
+ *   patch: {
+ *     op: 'replace',
+ *     path: ['status', 'priority'],
+ *     value: ['completed', 'low']
+ *   }
+ * });
+ * const result = await client.send(command);
+ * console.log(result.message); // "Model update queued successfully"
+ * ```
+ *
+ * @example
+ * ```typescript
+ * // Increment a counter
+ * const command = new UpdateModelCommand({
+ *   id: 'task_abc123',
+ *   type: 'task',
+ *   patch: {
+ *     op: 'incr',
+ *     path: ['viewCount'],
+ *     value: [1]
+ *   }
+ * });
+ * ```
+ *
+ * @example
+ * ```typescript
+ * // Append to an array
+ * const command = new UpdateModelCommand({
+ *   id: 'task_abc123',
+ *   type: 'task',
+ *   patch: {
+ *     op: 'append',
+ *     path: ['tags'],
+ *     value: [['urgent', 'backend']]
+ *   }
+ * });
+ * ```
+ */
+export class UpdateModelCommand extends Command<UpdateModelInput, UpdateModelOutput> {
+  constructor(input: UpdateModelInput) {
+    super(input, { authEnabled: true });
+  }
+
+  public resolveRequest(config: NexxusClientConfig) {
+    return {
+      method: 'PUT' as const,
+      path: `/model/${this.input.id}`,
+      body: {
+        type: this.input.type,
+        patch: this.input.patch,
+      },
+    };
+  }
+
+  public parseResponse(response: any): UpdateModelOutput {
+    return response as UpdateModelOutput;
+  }
+}
