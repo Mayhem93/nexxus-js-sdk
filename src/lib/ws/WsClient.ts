@@ -1,4 +1,4 @@
-import { TransportEventPayload, TransportRegisterClientPayload } from '../types';
+import { TransportServerMessage, TransportRegisterClientMessage, TransportModelEventData } from '../types';
 import type { WebSocket as WSWebSocket } from 'ws';
 import EventEmitter from 'eventemitter3';
 
@@ -41,7 +41,7 @@ export class WsClient extends EventEmitter {
    * Establishes WebSocket connection
    * Uses native WebSocket in browsers, 'ws' package in Node.js
    */
-  public async connect(onMessage: (message: Record<string, any>) => void): Promise<void> {
+  public async connect(onMessage: (payload: TransportModelEventData) => void): Promise<void> {
     return new Promise(async (resolve, reject) => {
       try {
         if (this.isBrowser) {
@@ -89,7 +89,7 @@ export class WsClient extends EventEmitter {
       throw new Error('WebSocket is not connected');
     }
 
-    const payload: TransportRegisterClientPayload = {
+    const payload: TransportRegisterClientMessage = {
       event: 'register',
       data: {
         deviceId,
@@ -100,9 +100,10 @@ export class WsClient extends EventEmitter {
   }
 
   /**
-   * Sets up event handlers for both browser and Node.js WebSocket implementations
+   * Sets up event handlers for both browser and Node.js WebSocket implementations.
+   * Both environments funnel incoming frames through `handleIncoming`.
    */
-  private setupEventHandlers(onOpen: () => void, onMessage: (message: Record<string, any>) => void, onError: (error: any) => void): void {
+  private setupEventHandlers(onOpen: () => void, onMessage: (payload: TransportModelEventData) => void, onError: (error: any) => void): void {
     if (!this.ws) {
       return;
     }
@@ -111,25 +112,51 @@ export class WsClient extends EventEmitter {
       // Browser WebSocket uses onopen/onerror/onmessage
       this.ws.onopen = () => onOpen();
       this.ws.onerror = (error: Event | ErrorEvent) => onError(error);
-      this.ws.onmessage = (event: MessageEvent) => onMessage(JSON.parse(event.data));
+      this.ws.onmessage = (event: MessageEvent) => this.handleIncoming(event.data, onMessage);
     } else {
-      // Node.js ws uses EventEmitter pattern
+      // Node.js 'ws' uses the EventEmitter pattern
       const nodeWs = this.ws as WSWebSocket;
 
       nodeWs.on('open', () => onOpen());
       nodeWs.on('error', (error: Error) => onError(error));
       nodeWs.on('message', (data: Buffer | string) => {
-        const message = JSON.parse(typeof data === 'string' ? data : data.toString()) as TransportEventPayload;
-
-        switch (message.event) {
-          case 'register':
-            this.emit('registered', message.data);
-
-            break;
-        }
-
-        // onMessage(JSON.parse(message));
+        this.handleIncoming(typeof data === 'string' ? data : data.toString(), onMessage);
       });
+    }
+  }
+
+  /**
+   * Parses an incoming frame and routes it by type:
+   * - `register` acks and `error` frames are surfaced as emitter events;
+   * - model-change events are forwarded to `onMessage` for channel routing.
+   *
+   * Shared by the browser and Node.js message handlers.
+   */
+  private handleIncoming(raw: string, onMessage: (payload: TransportModelEventData) => void): void {
+    let message: TransportServerMessage;
+
+    try {
+      message = JSON.parse(raw) as TransportServerMessage;
+    } catch {
+      this.emit('error', new Error('Received a malformed message from the transport'));
+
+      return;
+    }
+
+    switch (message.event) {
+      case 'register':
+        this.emit('registered', message.data);
+        break;
+
+      case 'error':
+        this.emit('transport-error', message.data);
+        break;
+
+      case 'model_created':
+      case 'model_updated':
+      case 'model_deleted':
+        onMessage(message.data);
+        break;
     }
   }
 }

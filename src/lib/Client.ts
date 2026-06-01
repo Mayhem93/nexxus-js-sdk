@@ -1,10 +1,9 @@
-import type { NexxusClientConfig } from './types';
+import type { NexxusClientConfig, TransportModelEventData } from './types';
 import { Command } from './Command';
 import { HttpHandler } from './HttpHandler';
 import { Channel } from './Channel';
 import { WsClient } from './ws/WsClient';
 import EventEmitter from 'eventemitter3';
-import { resolve } from 'node:dns';
 
 /**
  * Main Nexxus API client
@@ -28,21 +27,26 @@ export class NexxusClient extends EventEmitter {
   }
 
   public async initTransport(): Promise<void> {
-    if (this.wsClient) {
-      await this.wsClient.connect(this.handleChannelMessage.bind(this));
-
-      this.wsClient.register(this.config.deviceId!);
-
-      await new Promise((resolve) => {
-        this.wsClient!.once('registered', (data) => {
-          console.log('Device registered:', data);
-
-          resolve(undefined);
-        });
-      });
-
-      this.emit('connected');
+    if (!this.wsClient) {
+      return;
     }
+
+    if (!this.config.deviceId) {
+      throw new Error('A deviceId is required before initializing the transport. Register a device first.');
+    }
+
+    await this.wsClient.connect(this.handleChannelMessage.bind(this));
+
+    // Attach the listener before registering so the ack can't race ahead of us.
+    const registered = new Promise<void>((resolve) => {
+      this.wsClient!.once('registered', () => resolve());
+    });
+
+    this.wsClient.register(this.config.deviceId);
+
+    await registered;
+
+    this.emit('connected');
   }
 
   /**
@@ -114,7 +118,33 @@ export class NexxusClient extends EventEmitter {
     return this.channels.values();
   }
 
-  private handleChannelMessage(message: any): void {
-    console.log('Received channel message:', message);
+  private handleChannelMessage(payload: TransportModelEventData): void {
+    switch (payload.event) {
+      case 'model_created':
+        this.dispatchToChannels(payload.metadata.channels, (channel) => channel.emit('model_created', payload.model));
+        break;
+
+      case 'model_updated':
+        this.dispatchToChannels(payload.metadata.channels, (channel) => channel.emit('model_updated', payload.model, payload.patches));
+        break;
+
+      case 'model_deleted':
+        this.dispatchToChannels(payload.metadata.channels, (channel) => channel.emit('model_deleted', payload.model));
+        break;
+    }
+  }
+
+  /**
+   * Emits an event onto every locally-held channel whose key appears in the
+   * server-provided channel list. Channels this client doesn't hold are ignored.
+   */
+  private dispatchToChannels(channelKeys: string[], fn: (channel: Channel) => void): void {
+    for (const key of channelKeys) {
+      const channel = this.channels.get(key);
+
+      if (channel) {
+        fn(channel);
+      }
+    }
   }
 }

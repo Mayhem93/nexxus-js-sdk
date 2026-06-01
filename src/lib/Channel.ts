@@ -1,13 +1,13 @@
 import { SubscribeOutput } from './commands/subscription/Subscribe';
-import { AppModel, TransportModelUpdatedEventPayload } from './types';
+import { AppModel, ModelIdentity, TransportPatch } from './types';
 
 import EventEmitter from 'eventemitter3';
 import * as dot from 'dot-prop';
 
 interface ChannelEvents {
-  model_created: (item: AppModel) => void;
-  model_updated: (data: TransportModelUpdatedEventPayload['data']) => void;
-  model_deleted: (item: AppModel) => void;
+  model_created: (model: AppModel) => void;
+  model_updated: (model: ModelIdentity, patches: TransportPatch[]) => void;
+  model_deleted: (model: ModelIdentity) => void;
 }
 
 export class Channel extends EventEmitter<ChannelEvents> {
@@ -18,36 +18,31 @@ export class Channel extends EventEmitter<ChannelEvents> {
     super();
     this.name = input.data.channelId;
 
-    console.log(input);
-
     for (const item of input.data.items) {
       this.items.set(item.id, item);
     }
 
-    this.on('model_created', (item: AppModel) => {
-      this.add(item);
+    this.on('model_created', (model) => {
+      this.add(model);
     });
 
-    this.on('model_updated', (data: TransportModelUpdatedEventPayload['data']) => {
-      const obj = this.items.get(data.metadata.id);
+    this.on('model_updated', (model, patches) => {
+      const obj = this.items.get(model.id);
 
       if (!obj) {
-        console.warn(`Received update for unknown model ID ${data.metadata.id} in channel ${this.name}`);
+        console.warn(`Received update for unknown model ID "${model.id}" in channel ${this.name}`);
 
         return;
       }
 
-      this.applyPatch(obj, data);
+      // All patches in an update event target the same model — apply in order.
+      for (const patch of patches) {
+        this.applyPatch(obj, patch);
+      }
     });
 
-    this.on('model_deleted', (item: AppModel) => {
-      const removed = this.remove(item.id);
-
-      if (removed) {
-        console.log(`Model with ID ${item.id} removed from channel ${this.name}: ${removed}`);
-      } else {
-        console.log(`Model with ID ${item.id} not found in channel ${this.name}`);
-      }
+    this.on('model_deleted', (model) => {
+      this.remove(model.id);
     });
   }
 
@@ -75,8 +70,8 @@ export class Channel extends EventEmitter<ChannelEvents> {
     return this.name;
   }
 
-  private applyPatch(obj: AppModel, updated: TransportModelUpdatedEventPayload['data']): void {
-    const { op, path, value } = updated;
+  private applyPatch(obj: AppModel, patch: TransportPatch): void {
+    const { op, path, value } = patch;
 
     // Ensure path and value arrays have the same length
     if (path.length !== value.length) {

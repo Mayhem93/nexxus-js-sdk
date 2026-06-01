@@ -108,38 +108,101 @@ export interface AppModel {
   [key: string]: any;
 }
 
-export interface TransportModelCreatedEventPayload {
+/**
+ * A single JsonPatch operation as delivered over the realtime transport.
+ * Transport patches carry no metadata of their own: every patch in a
+ * `model_updated` event targets the same model, whose identity and matched
+ * channels are hoisted to the event level.
+ */
+export interface TransportPatch {
+  op: PatchOperation;
+  path: string[];
+  value: any[];
+}
+
+/**
+ * Identity fields shared by updated/deleted events. (The full model is only
+ * sent on create.)
+ */
+export interface ModelIdentity {
+  id: string;
+  type: string;
+  appId: string;
+  userId?: string;
+}
+
+/** Channels (subscription getKey() values) an event was routed to. */
+export interface TransportMetadata {
+  channels: string[];
+}
+
+/**
+ * Inner payload for a created model — the `data` of the wire envelope.
+ */
+export interface TransportModelCreatedData {
   event: 'model_created';
-  data: AppModel;
+  model: AppModel;
+  metadata: TransportMetadata;
 }
 
-export interface TransportModelUpdatedEventPayload {
+/**
+ * Inner payload for an updated model. All patches target the same `model`
+ * and should be applied in order.
+ */
+export interface TransportModelUpdatedData {
   event: 'model_updated';
-  data: {
-    op: PatchOperation;
-    path: Array<string>;
-    value: Array<any>;
-    metadata: {
-      id: string;
-      channels: Array<string>;
-    }
-  };
+  model: ModelIdentity;
+  patches: TransportPatch[];
+  metadata: TransportMetadata;
 }
 
-export interface TransportModelDeletedEventPayload {
+/**
+ * Inner payload for a deleted model.
+ */
+export interface TransportModelDeletedData {
   event: 'model_deleted';
-  data: {
-    id: string;
-    type: string;
-    appId: string;
-  };
+  model: ModelIdentity;
+  metadata: TransportMetadata;
 }
 
-export interface TransportRegisterClientPayload {
+/**
+ * Union of the model-change inner payloads forwarded to channel routing.
+ */
+export type TransportModelEventData =
+  | TransportModelCreatedData
+  | TransportModelUpdatedData
+  | TransportModelDeletedData;
+
+/** Server → client acknowledgement of device registration. */
+export interface TransportRegisterAck {
+  success: boolean;
+  message?: string;
+}
+
+/** Server → client error frame. */
+export interface TransportErrorData {
+  message: string;
+  code?: string;
+}
+
+/**
+ * Every server → client message is a `{ event, data }` envelope. This is the
+ * discriminated union of all frames the transport can send.
+ */
+export type TransportServerMessage =
+  | { event: 'register'; data: TransportRegisterAck }
+  | { event: 'error'; data: TransportErrorData }
+  | { event: 'model_created'; data: TransportModelCreatedData }
+  | { event: 'model_updated'; data: TransportModelUpdatedData }
+  | { event: 'model_deleted'; data: TransportModelDeletedData };
+
+/** Client → server device registration message. */
+export interface TransportRegisterClientMessage {
   event: 'register';
   data: {
     deviceId: string;
   };
 }
 
-export type TransportEventPayload = TransportModelCreatedEventPayload | TransportModelUpdatedEventPayload | TransportModelDeletedEventPayload | TransportRegisterClientPayload;
+/** Union of all client → server frames. */
+export type TransportClientMessage = TransportRegisterClientMessage;
