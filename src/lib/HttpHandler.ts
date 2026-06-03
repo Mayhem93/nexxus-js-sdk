@@ -1,4 +1,5 @@
-import type { HttpRequest, HttpResponse, NexxusError } from './types';
+import type { HttpRequest, HttpResponse } from './types';
+import { NexxusError } from './errors';
 
 /**
  * Handles HTTP requests using the Fetch API
@@ -8,14 +9,27 @@ export class HttpHandler {
    * Executes an HTTP request
    * @param request - HTTP request metadata
    * @returns HTTP response metadata
-   * @throws NexxusError on non-2xx responses
+   * @throws {NexxusError} on non-2xx responses (`name` = server error type) or
+   *   on a transport failure (`name` = `"NetworkError"`, `statusCode` = `0`)
    */
   public async handle(request: HttpRequest): Promise<HttpResponse> {
-    const response = await fetch(request.path, {
-      method: request.method,
-      headers: request.headers,
-      body: request.body,
-    });
+    let response: Response;
+
+    try {
+      response = await fetch(request.path, {
+        method: request.method,
+        headers: request.headers,
+        body: request.body,
+      });
+    } catch (cause) {
+      // The request never completed (DNS, connection refused, CORS, offline…).
+      throw new NexxusError({
+        name: 'NetworkError',
+        message: cause instanceof Error ? cause.message : 'The network request failed',
+        statusCode: 0,
+        cause,
+      });
+    }
 
     const responseHeaders: Record<string, string> = {};
     response.headers.forEach((value, key) => {
@@ -25,23 +39,18 @@ export class HttpHandler {
     const body = await response.text();
 
     if (!response.ok) {
-      let error: NexxusError;
+      let name = 'UnknownError';
+      let message = body || response.statusText;
+
       try {
         const errorData = JSON.parse(body);
-
-        error = {
-          name: errorData.error || 'UnknownError',
-          message: errorData.message || 'An error occurred',
-          statusCode: response.status,
-        };
+        name = errorData.error || name;
+        message = errorData.message || message;
       } catch {
-        error = {
-          name: 'UnknownError',
-          message: body || response.statusText,
-          statusCode: response.status,
-        };
+        // Non-JSON error body — keep the raw text / status text from above.
       }
-      throw error;
+
+      throw new NexxusError({ name, message, statusCode: response.status });
     }
 
     return {

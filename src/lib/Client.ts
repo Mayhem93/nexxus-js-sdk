@@ -49,6 +49,15 @@ export class NexxusClient extends EventEmitter {
     this.emit('connected');
   }
 
+  public disconnectTransport(): void {
+    if (!this.wsClient) {
+      return;
+    }
+
+    this.wsClient.disconnect();
+    this.emit('disconnected');
+  }
+
   /**
    * Executes a command against the Nexxus API
    * @param command - Command instance to execute

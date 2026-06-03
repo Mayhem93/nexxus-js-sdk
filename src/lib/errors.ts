@@ -1,0 +1,53 @@
+/**
+ * Parameters for constructing a {@link NexxusError}.
+ */
+export interface NexxusErrorParams {
+  /**
+   * Error discriminant. For an API error response this is the server-provided
+   * error type (e.g. `"UserAlreadyExistsException"`); for a transport failure
+   * it is `"NetworkError"`.
+   */
+  name: string;
+
+  /** Human-readable error message. */
+  message: string;
+
+  /** HTTP status code of the response, or `0` if the request never completed. */
+  statusCode: number;
+
+  /** The underlying error, when this wraps another failure (e.g. a network error). */
+  cause?: unknown;
+}
+
+/**
+ * Error thrown for every failure originating in the Nexxus client's HTTP layer.
+ *
+ * Following the AWS SDK convention, `name` carries the discriminant you switch
+ * on:
+ * - API error response → `name` is the server error type (e.g.
+ *   `"UserAlreadyExistsException"`) and `statusCode` is the HTTP status.
+ * - Transport/network failure → `name` is `"NetworkError"`, `statusCode` is `0`,
+ *   and the underlying error is available on `cause`.
+ *
+ * @example
+ * ```typescript
+ * try {
+ *   await client.send(command);
+ * } catch (err) {
+ *   if (err instanceof NexxusError) {
+ *     console.error(err.name, err.statusCode, err.message);
+ *   }
+ * }
+ * ```
+ */
+export class NexxusError extends Error {
+  /** HTTP status code of the response, or `0` if the request never completed. */
+  public readonly statusCode: number;
+
+  constructor({ name, message, statusCode, cause }: NexxusErrorParams) {
+    super(message, cause !== undefined ? { cause } : undefined);
+
+    this.name = name;
+    this.statusCode = statusCode;
+  }
+}

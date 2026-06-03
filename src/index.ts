@@ -1,4 +1,5 @@
 export * from './lib/Client';
+export * from './lib/errors';
 export * from './lib/commands/device/Register';
 export * from './lib/commands/user/AuthLocal';
 export * from './lib/commands/user/Register';

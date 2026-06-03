@@ -5,6 +5,16 @@
   "main": "dist/cjs/index.js",
   "module": "dist/esm/index.js",
   "types": "dist/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/types/index.d.ts",
+      "module": "./dist/esm/index.js",
+      "import": "./dist/cjs/index.js",
+      "require": "./dist/cjs/index.js",
+      "default": "./dist/cjs/index.js"
+    },
+    "./package.json": "./package.json"
+  },
   "sideEffects": false,
   "scripts": {
     "clean": "if exist dist rd /s /q dist",
@@ -17,13 +27,16 @@
   },
   "author": "Răzvan Botea <contact@razvanbotea.me>",
   "license": "MPL-2.0",
+  "engines": {
+    "node": ">=24.0.0"
+  },
   "files": [
     "dist/cjs/**/*",
-    "dist/esm/**/*"
+    "dist/esm/**/*",
+    "dist/types/**/*"
   ],
   "devDependencies": {
     "@tsconfig/node24": "^24.0.4",
-    "@types/eventemitter3": "^1.2.0",
     "@types/node": "^24.9.1",
     "@types/ws": "^8.18.1",
     "tslib": "^2.8.1",

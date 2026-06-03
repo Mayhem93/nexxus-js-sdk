@@ -25,26 +25,6 @@ export interface NexxusClientConfig {
 }
 
 /**
- * Generic error response structure from the API
- */
-export interface NexxusError {
-  /**
-   * Error name/type (e.g., 'ValidationError', 'NotFoundError')
-   */
-  name: string;
-
-  /**
-   * Human-readable error message
-   */
-  message: string;
-
-  /**
-   * HTTP status code
-   */
-  statusCode: number;
-}
-
-/**
  * HTTP request metadata
  */
 export interface HttpRequest {

@@ -63,9 +63,9 @@ export class WsClient extends EventEmitter {
   /**
    * Closes the WebSocket connection
    */
-  public disconnect(): void {
+  public disconnect(code?: number, reason?: string): void {
     if (this.ws) {
-      this.ws.close();
+      this.ws.close(code, reason);
       this.ws = null;
     }
   }

@@ -68,11 +68,12 @@ export interface SubscribeInput {
   model: string;
 
   /**
-   * If true, filters results to models owned by the authenticated user.
-   * Only available when authentication is enabled.
+   * Filter results to models owned by a specific user (that user's id).
+   * Intended for applications that have authentication enabled.
    * Cannot be used together with `id`.
+   * @example "user_abc123"
    */
-  userId?: boolean;
+  userId?: string;
 
   /**
    * Filter by specific model instance ID.
@@ -132,6 +133,21 @@ export interface SubscribeOutput {
 }
 
 /**
+ * Result of a `getOnly` subscription request — a one-time search that creates
+ * no channel/subscription. Behaves like a traditional search operation.
+ */
+export interface SubscribeQueryResult {
+  /** Model instances matching the query criteria */
+  items: AppModel[];
+}
+
+/**
+ * Resolves the command output based on the `getOnly` flag:
+ * `getOnly: true` yields a {@link SubscribeQueryResult}; otherwise a {@link Channel}.
+ */
+type SubscribeResult<G extends boolean | undefined> = G extends true ? SubscribeQueryResult : Channel;
+
+/**
  * Command to subscribe to a channel and optionally retrieve data
  *
  * Creates a subscription for the device to receive real-time updates.
@@ -162,10 +178,10 @@ export interface SubscribeOutput {
  *
  * @example
  * ```typescript
- * // Subscribe to current user's tasks
+ * // Subscribe to a specific user's tasks
  * const command = new SubscribeCommand({
  *   model: 'task',
- *   userId: true,
+ *   userId: 'user_abc123',
  *   limit: 10
  * });
  * ```
@@ -215,12 +231,12 @@ export interface SubscribeOutput {
  *   limit: 50
  * });
  * const result = await client.send(command);
- * // result.channelId will be undefined
+ * // result is a plain query result ({ items }); no Channel is created or tracked
  * console.log('Tasks:', result.items);
  * ```
  */
-export class SubscribeCommand extends Command<SubscribeInput, Channel> {
-  constructor(input: SubscribeInput) {
+export class SubscribeCommand<G extends boolean | undefined = undefined> extends Command<SubscribeInput, SubscribeResult<G>> {
+  constructor(input: SubscribeInput & { getOnly?: G }) {
     super(input, { authEnabled: true });
   }
 
@@ -232,7 +248,13 @@ export class SubscribeCommand extends Command<SubscribeInput, Channel> {
     };
   }
 
-  public parseResponse(response: any): Channel {
-    return new Channel(response as SubscribeOutput);
+  public parseResponse(response: any): SubscribeResult<G> {
+    // `getOnly` is a one-shot search: return the items and create no Channel,
+    // so the client won't register/track a subscription for it.
+    if (this.input.getOnly) {
+      return { items: (response as SubscribeOutput).data.items } as SubscribeResult<G>;
+    }
+
+    return new Channel(response as SubscribeOutput) as SubscribeResult<G>;
   }
 }
