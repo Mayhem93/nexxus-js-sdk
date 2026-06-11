@@ -10,6 +10,19 @@ interface ChannelEvents {
   model_deleted: (model: ModelIdentity) => void;
 }
 
+/**
+ * The read-only public face of a {@link Channel} handed to consumers: query the
+ * current items and subscribe to changes, but no mutation. The mutators and
+ * `emit` live only on the concrete `Channel`, which the client keeps internally.
+ *
+ * Compile-time encapsulation — a deliberate cast could still reach the concrete
+ * class; that's an accepted trade-off for a TS SDK.
+ */
+export type ReadonlyChannel = Pick<
+  Channel,
+  'getName' | 'get' | 'has' | 'size' | 'entries' | 'on' | 'once' | 'off' | typeof Symbol.iterator
+>;
+
 export class Channel extends EventEmitter<ChannelEvents> {
   private name: string;
   private readonly items: Map<string, AppModel> = new Map();
@@ -21,45 +34,84 @@ export class Channel extends EventEmitter<ChannelEvents> {
     for (const item of input.data.items) {
       this.items.set(item.id, item);
     }
-
-    this.on('model_created', (model) => {
-      this.add(model);
-    });
-
-    this.on('model_updated', (model, patches) => {
-      const obj = this.items.get(model.id);
-
-      if (!obj) {
-        console.warn(`Received update for unknown model ID "${model.id}" in channel ${this.name}`);
-
-        return;
-      }
-
-      // All patches in an update event target the same model — apply in order.
-      for (const patch of patches) {
-        this.applyPatch(obj, patch);
-      }
-    });
-
-    this.on('model_deleted', (model) => {
-      this.remove(model.id);
-    });
   }
 
   public [Symbol.iterator](): Iterator<AppModel> {
     return this.items.values();
   }
 
-  public add(item: AppModel): void {
-    this.items.set(item.id, item);
+  /**
+   * Iterate `[id, model]` pairs, mirroring `Map.entries()` — use when you need
+   * each model's id alongside it. (The default iterator yields models only.)
+   */
+  public entries(): IterableIterator<[string, AppModel]> {
+    return this.items.entries();
   }
 
-  public remove(itemId: string): boolean {
-    return this.items.delete(itemId);
+  /**
+   * Insert or replace a full model, version-guarded: writes only when the model
+   * is new or strictly newer than the local copy (newer wins; equal/older is
+   * dropped). Emits `model_created` when the item is new to the channel,
+   * otherwise `model_updated`. Used for create events and GET-based resyncs.
+   */
+  public upsert(model: AppModel): void {
+    const current = this.items.get(model.id);
+
+    if (current && model.version <= current.version) {
+      return;
+    }
+
+    this.items.set(model.id, model);
+
+    if (current) {
+      this.emit('model_updated', model, []);
+    } else {
+      this.emit('model_created', model);
+    }
+  }
+
+  /**
+   * Apply an update event's patches (in order) to an existing model and stamp
+   * its new version, then emit `model_updated`. The caller (client) only invokes
+   * this when `version` is exactly one ahead of the local copy; missing/gapped
+   * objects are resynced via `upsert` instead.
+   */
+  public applyPatches(id: string, patches: TransportPatch[], version: number): void {
+    const obj = this.items.get(id);
+
+    if (!obj) {
+      return;
+    }
+
+    for (const patch of patches) {
+      this.applyPatch(obj, patch);
+    }
+
+    obj.version = version;
+
+    this.emit('model_updated', obj, patches);
+  }
+
+  /**
+   * Remove a model from the channel; emits `model_deleted` only if it was
+   * actually present (so consumers aren't notified about items outside their view).
+   */
+  public remove(model: ModelIdentity): boolean {
+    const existed = this.items.delete(model.id);
+
+    if (existed) {
+      this.emit('model_deleted', model);
+    }
+
+    return existed;
   }
 
   public has(itemId: string): boolean {
     return this.items.has(itemId);
+  }
+
+  public get(itemId: string): AppModel | undefined {
+    return this.items.get(itemId);
   }
 
   public get size(): number {

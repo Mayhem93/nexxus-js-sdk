@@ -10,4 +10,5 @@ export * from './lib/commands/model/Create';
 export * from './lib/commands/model/Update';
 export * from './lib/commands/model/Delete';
 export * from './lib/commands/subscription/Subscribe';
+export type { ReadonlyChannel } from './lib/Channel';
 export type * from './lib/types';

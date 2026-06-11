@@ -22,6 +22,35 @@ export interface NexxusClientConfig {
    * Used in header: nxx-device-id
    */
   deviceId?: string;
+
+  /**
+   * Logger configuration. The client always logs to stdout/console; this only
+   * controls level and format. Consumers can attach additional transports
+   * (file in Node, network shipping in the browser, etc.) on the public
+   * `client.logger` instance.
+   */
+  logging?: LoggingConfig;
+}
+
+/**
+ * Log levels, low → high severity (mirrors the underlying logger's set).
+ */
+export type LogLevel = 'silly' | 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'fatal';
+
+/**
+ * Configuration for the client's logger.
+ */
+export interface LoggingConfig {
+  /**
+   * Minimum level to emit. Default: `'info'`.
+   */
+  level?: LogLevel;
+
+  /**
+   * Output format — `'text'` is human-readable (pretty), `'json'` is structured.
+   * Default: `'text'` in the browser, `'json'` in Node.
+   */
+  format?: 'json' | 'text';
 }
 
 /**
@@ -83,6 +112,13 @@ export interface AppModel {
   updatedAt: string;
 
   /**
+   * Monotonically-increasing per-document version, assigned by the backend on
+   * every write. Channels use it for gap detection / dedup when applying
+   * realtime updates. Always present on app models received from the backend.
+   */
+  version: number;
+
+  /**
    * Custom fields based on application schema
    */
   [key: string]: any;
@@ -126,12 +162,14 @@ export interface TransportModelCreatedData {
 }
 
 /**
- * Inner payload for an updated model. All patches target the same `model`
- * and should be applied in order.
+ * Inner payload for an updated model. All patches target the same `model` and
+ * should be applied in order. `model.version` is the post-update version stamp;
+ * the channel applies the patches only when it's exactly one ahead of the local
+ * copy (otherwise it resyncs via GET, or ignores a stale/duplicate event).
  */
 export interface TransportModelUpdatedData {
   event: 'model_updated';
-  model: ModelIdentity;
+  model: ModelIdentity & { version: number };
   patches: TransportPatch[];
   metadata: TransportMetadata;
 }

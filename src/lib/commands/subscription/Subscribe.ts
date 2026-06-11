@@ -1,5 +1,5 @@
 import { Command } from '../../Command';
-import { Channel } from '../../Channel';
+import { Channel, type ReadonlyChannel } from '../../Channel';
 import type { NexxusClientConfig, AppModel } from '../../types';
 
 /**
@@ -143,9 +143,9 @@ export interface SubscribeQueryResult {
 
 /**
  * Resolves the command output based on the `getOnly` flag:
- * `getOnly: true` yields a {@link SubscribeQueryResult}; otherwise a {@link Channel}.
+ * `getOnly: true` yields a {@link SubscribeQueryResult}; otherwise a {@link ReadonlyChannel}.
  */
-type SubscribeResult<G extends boolean | undefined> = G extends true ? SubscribeQueryResult : Channel;
+type SubscribeResult<G extends boolean | undefined> = G extends true ? SubscribeQueryResult : ReadonlyChannel;
 
 /**
  * Command to subscribe to a channel and optionally retrieve data
@@ -255,6 +255,8 @@ export class SubscribeCommand<G extends boolean | undefined = undefined> extends
       return { items: (response as SubscribeOutput).data.items } as SubscribeResult<G>;
     }
 
-    return new Channel(response as SubscribeOutput) as SubscribeResult<G>;
+    // A concrete Channel satisfies the public ReadonlyChannel contract; the
+    // double cast is only needed because TS can't resolve the generic conditional.
+    return new Channel(response as SubscribeOutput) as unknown as SubscribeResult<G>;
   }
 }

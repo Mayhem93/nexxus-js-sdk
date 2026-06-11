@@ -1,9 +1,12 @@
 import type { NexxusClientConfig, TransportModelEventData } from './types';
 import { Command } from './Command';
 import { HttpHandler } from './HttpHandler';
-import { Channel } from './Channel';
+import { Channel, type ReadonlyChannel } from './Channel';
+import { GetModelCommand } from './commands/model/Get';
 import { WsClient } from './ws/WsClient';
+import { createLogger } from './logger';
 import EventEmitter from 'eventemitter3';
+import type { Logger, ILogObj } from 'tslog';
 
 /**
  * Main Nexxus API client
@@ -15,10 +18,17 @@ export class NexxusClient extends EventEmitter {
   private channels: Map<string, Channel> = new Map();
   private wsClient: WsClient | null = null;
 
+  /**
+   * The client's logger. Logs to stdout/console by default; attach more
+   * transports (file, remote shipping, …) here as needed for your environment.
+   */
+  public readonly logger: Logger<ILogObj>;
+
   constructor(config: NexxusClientConfig) {
     super();
 
     this.config = { ...config };
+    this.logger = createLogger(this.config.logging);
     this.httpHandler = new HttpHandler();
 
     if (this.config.transportUri) {
@@ -119,33 +129,72 @@ export class NexxusClient extends EventEmitter {
     this.authToken = token;
   }
 
-  public getChannel(channelId: string): Channel | undefined {
+  public getChannel(channelId: string): ReadonlyChannel | undefined {
     return this.channels.get(channelId);
   }
 
-  public getChannels(): Iterable<Channel> {
+  public getChannels(): Iterable<ReadonlyChannel> {
     return this.channels.values();
   }
 
   private handleChannelMessage(payload: TransportModelEventData): void {
     switch (payload.event) {
-      case 'model_created':
-        this.dispatchToChannels(payload.metadata.channels, (channel) => channel.emit('model_created', payload.model));
+      case 'model_created': {
+        const { model } = payload;
+        this.dispatchToChannels(payload.metadata.channels, (channel) => channel.upsert(model));
         break;
+      }
 
-      case 'model_updated':
-        this.dispatchToChannels(payload.metadata.channels, (channel) => channel.emit('model_updated', payload.model, payload.patches));
-        break;
+      case 'model_updated': {
+        const { model, patches } = payload;
+        this.dispatchToChannels(payload.metadata.channels, (channel) => {
+          const local = channel.get(model.id);
 
-      case 'model_deleted':
-        this.dispatchToChannels(payload.metadata.channels, (channel) => channel.emit('model_deleted', payload.model));
+          if (!local) {
+            // Not in our view slice — fetch the full current object.
+            void this.resync(channel, model.type, model.id);
+          } else if (model.version === local.version + 1) {
+            channel.applyPatches(model.id, patches, model.version);
+          } else if (model.version > local.version + 1) {
+            // Missed at least one update — resync instead of applying a stale delta.
+            void this.resync(channel, model.type, model.id);
+          }
+          // else: model.version <= local.version -> stale/duplicate, ignore.
+        });
         break;
+      }
+
+      case 'model_deleted': {
+        const { model } = payload;
+        this.dispatchToChannels(payload.metadata.channels, (channel) => channel.remove(model));
+        break;
+      }
     }
   }
 
   /**
-   * Emits an event onto every locally-held channel whose key appears in the
-   * server-provided channel list. Channels this client doesn't hold are ignored.
+   * Fetch the current full model and version-guarded-upsert it into the channel.
+   * Used when an update targets an object missing from the channel's view, or
+   * when there's a version gap (applying a delta to a stale base would corrupt it).
+   * Fire-and-forget: failures surface via the client 'error' event, and the next
+   * update for the object re-triggers a resync, so it self-heals.
+   */
+  private async resync(channel: Channel, type: string, id: string): Promise<void> {
+    this.logger.debug('resync: fetching model', { label: 'resync', type, id, channel: channel.getName() });
+
+    try {
+      const { data } = await this.send(new GetModelCommand({ id, type }));
+      channel.upsert(data);
+      this.logger.debug('resync: upserted', { label: 'resync', id, version: data.version });
+    } catch (error) {
+      this.logger.error('resync: failed', { label: 'resync', type, id, error: error instanceof Error ? error.message : String(error) });
+      this.emit('error', error);
+    }
+  }
+
+  /**
+   * Runs `fn` for every locally-held channel whose key appears in the
+   * server-provided list. Channels this client doesn't hold are ignored.
    */
   private dispatchToChannels(channelKeys: string[], fn: (channel: Channel) => void): void {
     for (const key of channelKeys) {
