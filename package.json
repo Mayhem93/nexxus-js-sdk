@@ -1,5 +1,5 @@
 {
-  "name": "nexxus-js-sdk",
+  "name": "@mayhem93/nexxus-js-sdk",
   "version": "0.0.1",
   "description": "Typescript client for Nexxus backend",
   "main": "dist/cjs/index.js",
