@@ -9,6 +9,7 @@ export * from './lib/commands/model/Get';
 export * from './lib/commands/model/Create';
 export * from './lib/commands/model/Update';
 export * from './lib/commands/model/Delete';
+export * from './lib/commands/model/Count';
 export * from './lib/commands/subscription/Subscribe';
-export type { ReadonlyChannel } from './lib/Channel';
+export type { ReadonlyChannel, ChannelSubscription } from './lib/Channel';
 export type * from './lib/types';

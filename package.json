@@ -1,5 +1,5 @@
 {
-  "name": "nexxus-js-client",
+  "name": "nexxus-js-sdk",
   "version": "0.0.1",
   "description": "Typescript client for Nexxus backend",
   "main": "dist/cjs/index.js",
@@ -30,6 +30,11 @@
   "engines": {
     "node": ">=24.0.0"
   },
+  "keywords": [
+    "api",
+    "sdk",
+    "baas"
+  ],
   "files": [
     "dist/cjs/**/*",
     "dist/esm/**/*",

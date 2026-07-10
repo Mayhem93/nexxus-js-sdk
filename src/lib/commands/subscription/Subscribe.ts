@@ -255,8 +255,12 @@ export class SubscribeCommand<G extends boolean | undefined = undefined> extends
       return { items: (response as SubscribeOutput).data.items } as SubscribeResult<G>;
     }
 
+    // Keep the query that defines this channel (sans pagination) so it can later
+    // derive its own count request; `id` is retained to flag id-scoped channels.
+    const { model, userId, filter, id } = this.input;
+
     // A concrete Channel satisfies the public ReadonlyChannel contract; the
     // double cast is only needed because TS can't resolve the generic conditional.
-    return new Channel(response as SubscribeOutput) as unknown as SubscribeResult<G>;
+    return new Channel(response as SubscribeOutput, { model, userId, filter, id }) as unknown as SubscribeResult<G>;
   }
 }

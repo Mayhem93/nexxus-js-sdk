@@ -3,6 +3,7 @@ import { Command } from './Command';
 import { HttpHandler } from './HttpHandler';
 import { Channel, type ReadonlyChannel } from './Channel';
 import { GetModelCommand } from './commands/model/Get';
+import { CountCommand } from './commands/model/Count';
 import { WsClient } from './ws/WsClient';
 import { createLogger } from './logger';
 import EventEmitter from 'eventemitter3';
@@ -103,6 +104,7 @@ export class NexxusClient extends EventEmitter {
     const result = command.parseResponse(parsedBody);
 
     if (result instanceof Channel) {
+      result.setCountExecutor((query) => this.send(new CountCommand(query)));
       this.channels.set(result.getName(), result);
     }
 
@@ -180,14 +182,14 @@ export class NexxusClient extends EventEmitter {
    * update for the object re-triggers a resync, so it self-heals.
    */
   private async resync(channel: Channel, type: string, id: string): Promise<void> {
-    this.logger.debug('resync: fetching model', { label: 'resync', type, id, channel: channel.getName() });
+    // this.logger.debug('resync: fetching model', { label: 'resync', type, id, channel: channel.getName() });
 
     try {
       const { data } = await this.send(new GetModelCommand({ id, type }));
       channel.upsert(data);
-      this.logger.debug('resync: upserted', { label: 'resync', id, version: data.version });
+      this.logger.debug('resync: upserted', { label: 'resync', type, id, channel: channel.getName() });
     } catch (error) {
-      this.logger.error('resync: failed', { label: 'resync', type, id, error: error instanceof Error ? error.message : String(error) });
+      this.logger.error('resync: failed', { label: 'resync', type, id, channel: channel.getName(), error: error instanceof Error ? error.message : String(error) });
       this.emit('error', error);
     }
   }
