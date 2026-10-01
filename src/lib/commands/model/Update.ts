@@ -1,32 +1,5 @@
 import { Command } from '../../Command';
-import type { NexxusClientConfig, PatchOperation } from '../../types';
-
-/**
- * JsonPatch structure for model updates
- */
-export interface JsonPatch {
-  /**
-   * Patch operation type
-   * - `replace`: Replace field values
-   * - `append`: Append to array fields
-   * - `prepend`: Prepend to array fields
-   * - `incr`: Increment numeric fields
-   * - `decr`: Decrement numeric fields
-   */
-  op: PatchOperation;
-
-  /**
-   * Array of field paths to modify (supports dot notation for nested fields)
-   * Multiple paths can be specified for batch operations
-   */
-  path: string[];
-
-  /**
-   * Array of values corresponding to each path
-   * Must have the same length as the `path` array
-   */
-  value: any[];
-}
+import type { JsonPatch } from '../../types';
 
 /**
  * Input for updating a model instance using JsonPatch
@@ -66,8 +39,8 @@ export interface UpdateModelOutput {
  *
  * @example
  * ```typescript
- * const client = new NexxusClient({ baseUrl: 'http://localhost:3000', appId: 'myapp' });
- * client.setAuthToken('your-jwt-token');
+ * const client = new NexxusClient({ baseUrl: 'http://localhost:3000', appId: 'myapp', store });
+ * // …after authenticating. The stored token is attached automatically.
  *
  * // Replace multiple fields
  * const command = new UpdateModelCommand({
@@ -116,7 +89,7 @@ export class UpdateModelCommand extends Command<UpdateModelInput, UpdateModelOut
     super(input, { authEnabled: true });
   }
 
-  public resolveRequest(config: NexxusClientConfig) {
+  public resolveRequest() {
     return {
       method: 'PUT' as const,
       path: `/model/${this.input.id}`,

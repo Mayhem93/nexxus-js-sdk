@@ -1,5 +1,4 @@
 import { Command } from '../../Command';
-import type { NexxusClientConfig } from '../../types';
 
 /**
  * Input for getting current user (no parameters needed)
@@ -46,8 +45,8 @@ export interface GetUserOutput {
  *
  * @example
  * ```typescript
- * const client = new NexxusClient({ baseUrl: 'http://localhost:3000', appId: 'myapp' });
- * client.setAuthToken('your-jwt-token');
+ * const client = new NexxusClient({ baseUrl: 'http://localhost:3000', appId: 'myapp', store });
+ * // …after authenticating. The stored token is attached automatically.
  * const command = new GetUserCommand({});
  * const user = await client.send(command);
  * console.log('User:', user.username);
@@ -58,7 +57,7 @@ export class GetUserCommand extends Command<GetUserInput, GetUserOutput> {
     super(input, { authEnabled: true });
   }
 
-  public resolveRequest(config: NexxusClientConfig) {
+  public resolveRequest() {
     return {
       method: 'GET' as const,
       path: '/user/me',

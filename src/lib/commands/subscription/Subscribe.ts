@@ -1,116 +1,12 @@
 import { Command } from '../../Command';
 import { Channel, type ReadonlyChannel } from '../../Channel';
-import type { NexxusClientConfig, AppModel } from '../../types';
+import type { AppModel, Paginated, ScopedModelQuery } from '../../types';
 
 /**
- * FilterQuery DSL operators for advanced filtering
+ * Input for creating a subscription: what to subscribe to, plus how to page the
+ * first batch of items.
  */
-export interface FilterQuery {
-  /**
-   * Equality operator
-   */
-  eq?: any;
-
-  /**
-   * Not equal operator
-   */
-  ne?: any;
-
-  /**
-   * Greater than operator
-   */
-  gt?: any;
-
-  /**
-   * Greater than or equal operator
-   */
-  gte?: any;
-
-  /**
-   * Less than operator
-   */
-  lt?: any;
-
-  /**
-   * Less than or equal operator
-   */
-  lte?: any;
-
-  /**
-   * In array operator
-   */
-  in?: any[];
-
-  /**
-   * AND logical operator
-   */
-  $and?: FilterQuery[];
-
-  /**
-   * OR logical operator
-   */
-  $or?: FilterQuery[];
-
-  /**
-   * Field path with nested operators
-   */
-  [field: string]: any;
-}
-
-/**
- * Input for creating a subscription
- */
-export interface SubscribeInput {
-  /**
-   * Model type from the application schema
-   * @example "task"
-   */
-  model: string;
-
-  /**
-   * Filter results to models owned by a specific user (that user's id).
-   * Intended for applications that have authentication enabled.
-   * Cannot be used together with `id`.
-   * @example "user_abc123"
-   */
-  userId?: string;
-
-  /**
-   * Filter by specific model instance ID.
-   * Cannot be used together with `userId`.
-   * @example "task_abc123"
-   */
-  id?: string;
-
-  /**
-   * FilterQuery DSL for advanced filtering.
-   * Supports operators: eq, ne, gt, gte, lt, lte, in, and, or.
-   * Field paths support dot notation for nested fields.
-   */
-  filter?: FilterQuery;
-
-  /**
-   * If true, retrieves data without creating a subscription.
-   * Useful for one-time queries.
-   * @default false
-   */
-  getOnly?: boolean;
-
-  /**
-   * Maximum number of items to return
-   * @default 10
-   * @minimum 1
-   * @maximum 100
-   */
-  limit?: number;
-
-  /**
-   * Number of items to skip (for pagination)
-   * @default 0
-   * @minimum 0
-   */
-  offset?: number;
-}
+export type SubscribeInput = ScopedModelQuery & Paginated;
 
 /**
  * Subscription response
@@ -119,7 +15,6 @@ export interface SubscribeOutput {
   data :{
     /**
    * Unique subscription channel identifier.
-   * Only present when `getOnly` is false.
    * Used internally to route real-time updates.
    * @example "nxx:subscription:myapp:task:partition:0"
    */
@@ -133,54 +28,36 @@ export interface SubscribeOutput {
 }
 
 /**
- * Result of a `getOnly` subscription request — a one-time search that creates
- * no channel/subscription. Behaves like a traditional search operation.
- */
-export interface SubscribeQueryResult {
-  /** Model instances matching the query criteria */
-  items: AppModel[];
-}
-
-/**
- * Resolves the command output based on the `getOnly` flag:
- * `getOnly: true` yields a {@link SubscribeQueryResult}; otherwise a {@link ReadonlyChannel}.
- */
-type SubscribeResult<G extends boolean | undefined> = G extends true ? SubscribeQueryResult : ReadonlyChannel;
-
-/**
- * Command to subscribe to a channel and optionally retrieve data
+ * Command to subscribe to a channel and receive its first page of data.
  *
- * Creates a subscription for the device to receive real-time updates.
- * The subscription is tied to the device specified in the `nxx-device-id` header.
- * Device must be connected to a transport (e.g., WebSocket) to receive notifications.
+ * Creates a subscription for the calling device — which the token names — so
+ * it receives real-time updates. The device must already be connected to a
+ * transport, or this fails with `DeviceNotConnectedException`.
  *
- * If `getOnly` is true, only retrieves data without creating a subscription.
+ * For a one-off query with no subscription and no channel, use
+ * {@link SearchCommand} instead.
  *
  * @example
  * ```typescript
- * const client = new NexxusClient({
- *   baseUrl: 'http://localhost:3000',
- *   appId: 'myapp',
- *   deviceId: 'dev_abc123'
- * });
- * client.setAuthToken('your-jwt-token');
+ * const client = new NexxusClient({ baseUrl: 'http://localhost:3000', appId: 'myapp', store });
+ * await client.send(new AuthLocalCommand({ username, password }));
+ * await client.initTransport();
  *
- * // Subscribe to all tasks
- * const command = new SubscribeCommand({
- *   model: 'task',
+ * // Subscribe to all tasks — the result is a live Channel
+ * const channel = await client.send(new SubscribeCommand({
+ *   type: 'task',
  *   limit: 10,
  *   offset: 0
- * });
- * const result = await client.send(command);
- * console.log('Channel ID:', result.channelId);
- * console.log('Tasks:', result.items);
+ * }));
+ * console.log('Channel ID:', channel.getName());
+ * console.log('Tasks held locally:', channel.size);
  * ```
  *
  * @example
  * ```typescript
  * // Subscribe to a specific user's tasks
  * const command = new SubscribeCommand({
- *   model: 'task',
+ *   type: 'task',
  *   userId: 'user_abc123',
  *   limit: 10
  * });
@@ -190,7 +67,7 @@ type SubscribeResult<G extends boolean | undefined> = G extends true ? Subscribe
  * ```typescript
  * // Subscribe to a specific task by ID
  * const command = new SubscribeCommand({
- *   model: 'task',
+ *   type: 'task',
  *   id: 'task_abc123'
  * });
  * ```
@@ -199,7 +76,7 @@ type SubscribeResult<G extends boolean | undefined> = G extends true ? Subscribe
  * ```typescript
  * // Subscribe with filter for high-priority tasks
  * const command = new SubscribeCommand({
- *   model: 'task',
+ *   type: 'task',
  *   filter: {
  *     priority: 'high'
  *   },
@@ -211,7 +88,7 @@ type SubscribeResult<G extends boolean | undefined> = G extends true ? Subscribe
  * ```typescript
  * // Complex filter with AND/OR operators
  * const command = new SubscribeCommand({
- *   model: 'task',
+ *   type: 'task',
  *   filter: {
  *     $or: [
  *       { status: { in: ['todo', 'in_progress'] } },
@@ -221,46 +98,29 @@ type SubscribeResult<G extends boolean | undefined> = G extends true ? Subscribe
  *   limit: 10
  * });
  * ```
- *
- * @example
- * ```typescript
- * // Get data without subscribing (one-time query)
- * const command = new SubscribeCommand({
- *   model: 'task',
- *   getOnly: true,
- *   limit: 50
- * });
- * const result = await client.send(command);
- * // result is a plain query result ({ items }); no Channel is created or tracked
- * console.log('Tasks:', result.items);
- * ```
  */
-export class SubscribeCommand<G extends boolean | undefined = undefined> extends Command<SubscribeInput, SubscribeResult<G>> {
-  constructor(input: SubscribeInput & { getOnly?: G }) {
+export class SubscribeCommand extends Command<SubscribeInput, ReadonlyChannel> {
+  constructor(input: SubscribeInput) {
     super(input, { authEnabled: true });
   }
 
-  public resolveRequest(config: NexxusClientConfig) {
+  public resolveRequest() {
+    const { type, ...rest } = this.input;
+
     return {
       method: 'POST' as const,
       path: '/subscription/',
-      body: this.input,
+      // The subscription routes call the model type `model` on the wire.
+      body: { model: type, ...rest },
     };
   }
 
-  public parseResponse(response: any): SubscribeResult<G> {
-    // `getOnly` is a one-shot search: return the items and create no Channel,
-    // so the client won't register/track a subscription for it.
-    if (this.input.getOnly) {
-      return { items: (response as SubscribeOutput).data.items } as SubscribeResult<G>;
-    }
+  public parseResponse(response: any): ReadonlyChannel {
+    // The channel keeps the descriptor that identifies it — the input minus
+    // pagination, which only shaped the first page. It needs that descriptor to
+    // derive its own count request, and a caller needs it to unsubscribe.
+    const { limit: _limit, offset: _offset, ...subscription } = this.input;
 
-    // Keep the query that defines this channel (sans pagination) so it can later
-    // derive its own count request; `id` is retained to flag id-scoped channels.
-    const { model, userId, filter, id } = this.input;
-
-    // A concrete Channel satisfies the public ReadonlyChannel contract; the
-    // double cast is only needed because TS can't resolve the generic conditional.
-    return new Channel(response as SubscribeOutput, { model, userId, filter, id }) as unknown as SubscribeResult<G>;
+    return new Channel(response as SubscribeOutput, subscription);
   }
 }

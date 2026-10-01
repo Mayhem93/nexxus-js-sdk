@@ -9,19 +9,35 @@ export class HttpHandler {
    * Executes an HTTP request
    * @param request - HTTP request metadata
    * @returns HTTP response metadata
-   * @throws {NexxusError} on non-2xx responses (`name` = server error type) or
-   *   on a transport failure (`name` = `"NetworkError"`, `statusCode` = `0`)
+   * @throws {NexxusError} on non-2xx responses (`name` = server error type), on
+   *   a transport failure (`name` = `"NetworkError"`, `statusCode` = `0`), or
+   *   when `timeoutMs` runs out (`name` = `"TimeoutError"`, `statusCode` = `0`)
    */
   public async handle(request: HttpRequest): Promise<HttpResponse> {
     let response: Response;
+    let body: string;
 
     try {
       response = await fetch(request.path, {
         method: request.method,
         headers: request.headers,
         body: request.body,
+        // Covers the body as well as the headers: the signal aborts a read
+        // still streaming when it fires.
+        signal: request.timeoutMs !== undefined ? AbortSignal.timeout(request.timeoutMs) : undefined,
       });
+
+      body = await response.text();
     } catch (cause) {
+      if ((cause as { name?: unknown } | null)?.name === 'TimeoutError') {
+        throw new NexxusError({
+          name: 'TimeoutError',
+          message: `The request timed out after ${request.timeoutMs} ms`,
+          statusCode: 0,
+          cause,
+        });
+      }
+
       // The request never completed (DNS, connection refused, CORS, offline…).
       throw new NexxusError({
         name: 'NetworkError',
@@ -35,8 +51,6 @@ export class HttpHandler {
     response.headers.forEach((value, key) => {
       responseHeaders[key] = value;
     });
-
-    const body = await response.text();
 
     if (!response.ok) {
       let name = 'UnknownError';

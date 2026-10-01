@@ -1,6 +1,6 @@
 {
   "name": "@mayhem93/nexxus-js-sdk",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Typescript client for Nexxus backend",
   "main": "dist/cjs/index.js",
   "module": "dist/esm/index.js",
@@ -55,5 +55,9 @@
     "eventemitter3": "^5.0.4",
     "tslog": "^4.10.2",
     "ws": "^8.19.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Mayhem93/nexxus-js-sdk.git"
   }
 }

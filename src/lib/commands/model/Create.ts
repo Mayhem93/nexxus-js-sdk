@@ -1,5 +1,4 @@
 import { Command } from '../../Command';
-import type { NexxusClientConfig } from '../../types';
 
 /**
  * Input for creating a new model instance
@@ -38,8 +37,8 @@ export interface CreateModelOutput {
  *
  * @example
  * ```typescript
- * const client = new NexxusClient({ baseUrl: 'http://localhost:3000', appId: 'myapp' });
- * client.setAuthToken('your-jwt-token');
+ * const client = new NexxusClient({ baseUrl: 'http://localhost:3000', appId: 'myapp', store });
+ * // …after authenticating. The stored token is attached automatically.
  * const command = new CreateModelCommand({
  *   type: 'task',
  *   title: 'Complete documentation',
@@ -57,7 +56,7 @@ export class CreateModelCommand extends Command<CreateModelInput, CreateModelOut
     super(input, { authEnabled: true });
   }
 
-  public resolveRequest(config: NexxusClientConfig) {
+  public resolveRequest() {
     return {
       method: 'POST' as const,
       path: '/model/',

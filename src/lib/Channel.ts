@@ -1,28 +1,14 @@
-import { SubscribeOutput, type FilterQuery } from './commands/subscription/Subscribe';
+import { SubscribeOutput } from './commands/subscription/Subscribe';
 import type { CountInput } from './commands/model/Count';
-import { AppModel, ModelIdentity, TransportPatch } from './types';
+import { AppModel, ModelIdentity, ScopedModelQuery, JsonPatch } from './types';
 
 import EventEmitter from 'eventemitter3';
 import * as dot from 'dot-prop';
 
 interface ChannelEvents {
   model_created: (model: AppModel) => void;
-  model_updated: (model: ModelIdentity, patches: TransportPatch[]) => void;
+  model_updated: (model: ModelIdentity, patches: JsonPatch[]) => void;
   model_deleted: (model: ModelIdentity) => void;
-}
-
-/**
- * The query that defines a channel — the part of the original subscribe request
- * that says *which* models the channel represents (not how they were paged).
- * Kept so the channel can re-derive its own count request (and, later, an
- * unsubscribe). `limit`/`offset` are intentionally dropped — they're pagination,
- * not identity. `id` is retained only to mark id-scoped subscriptions.
- */
-export interface ChannelSubscription {
-  model: string;
-  userId?: string;
-  filter?: FilterQuery;
-  id?: string;
 }
 
 /**
@@ -41,10 +27,15 @@ export type ReadonlyChannel = Pick<
 export class Channel extends EventEmitter<ChannelEvents> {
   private name: string;
   private readonly items: Map<string, AppModel> = new Map();
-  private readonly subscription: ChannelSubscription;
+  /**
+   * The descriptor that identifies this channel — the subscribe request minus
+   * its pagination, which only shaped the first page. Kept so the channel can
+   * derive its own count request. `id`, when set, marks an id-scoped channel.
+   */
+  private readonly subscription: ScopedModelQuery;
   private countExecutor?: (query: CountInput) => Promise<number>;
 
-  constructor(input: SubscribeOutput, subscription: ChannelSubscription) {
+  constructor(input: SubscribeOutput, subscription: ScopedModelQuery) {
     super();
     this.name = input.data.channelId;
     this.subscription = subscription;
@@ -65,7 +56,7 @@ export class Channel extends EventEmitter<ChannelEvents> {
 
   /**
    * The number of models the server currently holds for this channel's
-   * subscription criteria (`model` + `userId` + `filter`), independent of the
+   * subscription criteria (`type` + `userId` + `filter`), independent of the
    * local view / page size — contrast with {@link size}, the count held locally.
    *
    * For an id-scoped subscription this resolves locally to {@link size} (0 or 1):
@@ -82,9 +73,11 @@ export class Channel extends EventEmitter<ChannelEvents> {
       throw new Error('Channel is not attached to a client');
     }
 
-    const { model, userId, filter } = this.subscription;
+    // Named rather than spread: count takes a deliberately narrower query, so a
+    // field later added to the descriptor must not reach it by default.
+    const { type, userId, filter } = this.subscription;
 
-    return this.countExecutor({ type: model, userId, filter });
+    return this.countExecutor({ type, userId, filter });
   }
 
   public [Symbol.iterator](): Iterator<AppModel> {
@@ -108,7 +101,7 @@ export class Channel extends EventEmitter<ChannelEvents> {
   public upsert(model: AppModel): void {
     const current = this.items.get(model.id);
 
-    if (current && model.version <= current.version) {
+    if (current && Channel.isStale(model, current)) {
       return;
     }
 
@@ -127,7 +120,7 @@ export class Channel extends EventEmitter<ChannelEvents> {
    * this when `version` is exactly one ahead of the local copy; missing/gapped
    * objects are resynced via `upsert` instead.
    */
-  public applyPatches(id: string, patches: TransportPatch[], version: number): void {
+  public applyPatches(id: string, patches: JsonPatch[], version: number): void {
     const obj = this.items.get(id);
 
     if (!obj) {
@@ -173,7 +166,24 @@ export class Channel extends EventEmitter<ChannelEvents> {
     return this.name;
   }
 
-  private applyPatch(obj: AppModel, patch: TransportPatch): void {
+  /**
+   * Whether `incoming` is no newer than `current` and should be dropped.
+   *
+   * Ordering needs a version on both sides. A model without one is transient —
+   * it skipped the writer, so nothing stamped it — and transient models are
+   * create-only, so there is no later update for it to race; the write is let
+   * through. Likewise a versioned model always supersedes an unversioned copy,
+   * since it is the strictly more informative of the two.
+   */
+  private static isStale(incoming: AppModel, current: AppModel): boolean {
+    if (incoming.version === undefined || current.version === undefined) {
+      return false;
+    }
+
+    return incoming.version <= current.version;
+  }
+
+  private applyPatch(obj: AppModel, patch: JsonPatch): void {
     const { op, path, value } = patch;
 
     // Ensure path and value arrays have the same length
