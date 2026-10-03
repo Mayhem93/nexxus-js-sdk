@@ -1,5 +1,4 @@
 import { Command } from '../../Command';
-import type { NexxusClientConfig } from '../../types';
 
 /**
  * Input for deleting a model instance
@@ -36,8 +35,8 @@ export interface DeleteModelOutput {
  *
  * @example
  * ```typescript
- * const client = new NexxusClient({ baseUrl: 'http://localhost:3000', appId: 'myapp' });
- * client.setAuthToken('your-jwt-token');
+ * const client = new NexxusClient({ baseUrl: 'http://localhost:3000', appId: 'myapp', store });
+ * // …after authenticating. The stored token is attached automatically.
  * const command = new DeleteModelCommand({
  *   id: 'task_abc123',
  *   type: 'task'
@@ -51,7 +50,7 @@ export class DeleteModelCommand extends Command<DeleteModelInput, DeleteModelOut
     super(input, { authEnabled: true });
   }
 
-  public resolveRequest(config: NexxusClientConfig) {
+  public resolveRequest() {
     return {
       method: 'DELETE' as const,
       path: `/model/${this.input.id}`,
