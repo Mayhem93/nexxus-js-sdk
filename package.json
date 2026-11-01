@@ -1,6 +1,6 @@
 {
   "name": "@mayhem93/nexxus-js-sdk",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "Typescript client for Nexxus backend",
   "main": "dist/cjs/index.js",
   "module": "dist/esm/index.js",
