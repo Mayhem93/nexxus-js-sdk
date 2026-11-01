@@ -119,21 +119,31 @@ export class Channel extends EventEmitter<ChannelEvents> {
    * its new version, then emit `model_updated`. The caller (client) only invokes
    * this when `version` is exactly one ahead of the local copy; missing/gapped
    * objects are resynced via `upsert` instead.
+   *
+   * Returns `false` when a patch can't be applied exactly — an `append` to a
+   * field with no value yet, say, whose type only the schema knows. The version
+   * is then left as it was and nothing is emitted: the copy is behind the
+   * server, and the caller must re-read it rather than build on it. Patches
+   * before the failing one stay applied until the re-read replaces the copy.
    */
-  public applyPatches(id: string, patches: JsonPatch[], version: number): void {
+  public applyPatches(id: string, patches: JsonPatch[], version: number): boolean {
     const obj = this.items.get(id);
 
     if (!obj) {
-      return;
+      return false;
     }
 
     for (const patch of patches) {
-      this.applyPatch(obj, patch);
+      if (!this.applyPatch(obj, patch)) {
+        return false;
+      }
     }
 
     obj.version = version;
 
     this.emit('model_updated', obj, patches);
+
+    return true;
   }
 
   /**
@@ -183,13 +193,17 @@ export class Channel extends EventEmitter<ChannelEvents> {
     return incoming.version <= current.version;
   }
 
-  private applyPatch(obj: AppModel, patch: JsonPatch): void {
+  /**
+   * Apply one patch in place. Returns `false` when the copy can't follow it
+   * exactly; paths before the one that failed stay applied.
+   */
+  private applyPatch(obj: AppModel, patch: JsonPatch): boolean {
     const { op, path, value } = patch;
 
     // Ensure path and value arrays have the same length
     if (path.length !== value.length) {
       console.warn(`Path and value arrays length mismatch in channel ${this.name}`);
-      return;
+      return false;
     }
 
     for (let i = 0; i < path.length; i++) {
@@ -208,6 +222,12 @@ export class Channel extends EventEmitter<ChannelEvents> {
             {
               const currentValue = dot.getProperty(obj, fieldPath);
 
+              // No value yet: the server creates an array or a string, and only
+              // the schema says which. Not a fault — the caller re-reads.
+              if (currentValue === undefined || currentValue === null) {
+                return false;
+              }
+
               if (Array.isArray(currentValue)) {
                 const arr = currentValue as any[];
                 arr.push(fieldValue);
@@ -215,14 +235,20 @@ export class Channel extends EventEmitter<ChannelEvents> {
                 dot.setProperty(obj, fieldPath, currentValue + (fieldValue as string));
               } else {
                 console.warn(`Cannot append to non-array/non-string field ${fieldPath} in channel ${this.name}`);
+                return false;
               }
             }
             break;
 
           case 'prepend':
-            // Prepend to an array or string at the given path
+            // Prepend to an array or string at the given path; a field with no
+            // value yet can't be followed, as with `append`
             {
               const currentValue = dot.getProperty(obj, fieldPath);
+
+              if (currentValue === undefined || currentValue === null) {
+                return false;
+              }
 
               if (Array.isArray(currentValue)) {
                 const arr = currentValue as any[];
@@ -231,40 +257,81 @@ export class Channel extends EventEmitter<ChannelEvents> {
                 dot.setProperty(obj, fieldPath, (fieldValue as string) + currentValue);
               } else {
                 console.warn(`Cannot prepend to non-array/non-string field ${fieldPath} in channel ${this.name}`);
+                return false;
               }
             }
             break;
 
           case 'incr':
-            // Increment a numeric value
+            // Increment a numeric value. A field with no value counts as 0, as
+            // it does on the server.
             {
-              const currentValue = dot.getProperty(obj, fieldPath);
+              const currentValue = dot.getProperty(obj, fieldPath) ?? 0;
               if (typeof currentValue === 'number') {
                 dot.setProperty(obj, fieldPath, currentValue + (fieldValue as number));
               } else {
                 console.warn(`Cannot increment non-numeric field ${fieldPath} in channel ${this.name}`);
+                return false;
               }
             }
             break;
 
           case 'decr':
-            // Decrement a numeric value
+            // Decrement a numeric value. A field with no value counts as 0.
             {
-              const currentValue = dot.getProperty(obj, fieldPath);
+              const currentValue = dot.getProperty(obj, fieldPath) ?? 0;
               if (typeof currentValue === 'number') {
                 dot.setProperty(obj, fieldPath, currentValue - (fieldValue as number));
               } else {
                 console.warn(`Cannot decrement non-numeric field ${fieldPath} in channel ${this.name}`);
+                return false;
+              }
+            }
+            break;
+
+          case 'remove':
+            // Take elements out of an array: `{ v }` removes every element equal
+            // to `v`, `{ i }` the element at index `i`. A field with no value, or
+            // an index past the end, removes nothing — as on the server.
+            {
+              const currentValue = dot.getProperty(obj, fieldPath);
+
+              if (currentValue === undefined || currentValue === null) {
+                break;
+              }
+
+              if (!Array.isArray(currentValue)) {
+                console.warn(`Cannot remove from non-array field ${fieldPath} in channel ${this.name}`);
+                return false;
+              }
+
+              const arr = currentValue as any[];
+
+              if (Number.isInteger(fieldValue?.i) && fieldValue.i >= 0) {
+                arr.splice(fieldValue.i, 1);
+              } else if (fieldValue !== null && typeof fieldValue === 'object' && 'v' in fieldValue) {
+                for (let k = arr.length - 1; k >= 0; k--) {
+                  if (arr[k] === fieldValue.v) {
+                    arr.splice(k, 1);
+                  }
+                }
+              } else {
+                console.warn(`Invalid remove value for field ${fieldPath} in channel ${this.name}`);
+                return false;
               }
             }
             break;
 
           default:
             console.warn(`Unknown patch operation ${op} in channel ${this.name}`);
+            return false;
         }
       } catch (error) {
         console.warn(`Failed to apply ${op} operation on ${fieldPath} in channel ${this.name}:`, error);
+        return false;
       }
     }
+
+    return true;
   }
 }

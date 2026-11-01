@@ -120,10 +120,12 @@ ignored and a new device issued — not an error. The client always re-reads the
 device id from the response, so the stored value tracks what the server
 actually did.
 
-**Registration is the exception.** It always creates the account's first
-device and takes no device input at all — an id couldn't match there anyway,
-since the account it would be matched against is created by that same call.
-The device it creates is unnamed; rename it afterwards through the device
+**Registration is the exception.** It takes no device input and always
+creates a new device — even when it signs in. Registering a username that
+already exists, with that account's password, signs in to that account
+(`accountCreated: false`); any other password is a `409`. So sign returning
+users in with `AuthLocalCommand`, which reuses the stored device. The device a
+registration creates is unnamed; rename it afterwards through the device
 route.
 
 That splits the `device` object along the line of who owns each part:
@@ -270,7 +272,7 @@ the subscription feeding it.
 
 ### Versioning & resync
 
-Each model has a monotonically increasing `version`. The client applies an update only when it's exactly one ahead of the local copy. If it sees a version gap, or an update for an object not in its view, it fetches the current object and reconciles — so a channel converges to the correct state even if events are missed or arrive out of order.
+Each model has a monotonically increasing `version`. The client applies an update only when it's exactly one ahead of the local copy. It fetches the current object instead when it sees a version gap, an update for an object not in its view, or an update it can't apply exactly, such as an `append` to a field that has no value yet. So a channel converges to the correct state even if events are missed or arrive out of order.
 
 ### Logging
 

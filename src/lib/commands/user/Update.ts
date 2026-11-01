@@ -22,13 +22,17 @@ export interface UpdateUserOutput {
  * Command to update authenticated user's profile using JsonPatch.
  *
  * **Paths the server refuses** (`400`):
- * - `userType`, `authProviders`, `devices`, `createdAt`, `updatedAt`
+ * - `username`, `userType`, `authProviders`, `devices`, `createdAt`, `updatedAt`
  * - anything under a `details.$…` key — those namespaces belong to auth
  *   strategies. Prefix-matched, so a strategy added later is covered too.
  *
  * Patching `password` hashes it server-side, and on an account that had none
  * (one created through an OAuth provider) also adds `local` to
- * `authProviders`.
+ * `authProviders`. It can only be set with `replace`, to a non-empty string;
+ * anything else is a `400`.
+ *
+ * Fails with `NotFoundException` (`404`) when the account no longer exists:
+ * it was deleted while this client's access token was still valid.
  *
  * **The change is not visible through `GetUserCommand` until the client
  * authenticates again.** `/user/me` reads the token, not the database, and the

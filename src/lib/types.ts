@@ -326,17 +326,20 @@ export interface SessionResponse extends SessionTokens {
     id: string;
     username: string;
   };
+
+  /**
+   * Whether this request created the account: `true` for a new registration,
+   * or a first sign-in through an OAuth provider; `false` for any other
+   * sign-in — including a registration with a username that already exists
+   * and that account's password, which signs in to it.
+   */
+  accountCreated: boolean;
 }
 
 /**
  * JsonPatch operation types.
- *
- * `remove` is deliberately absent. The OpenAPI spec and the migration brief
- * both list it, but the server does not implement it: core rejects it as an
- * unsupported operation, so it could only ever produce a `400`. Add it here
- * when the server gains it, not because the spec mentions it.
  */
-export type PatchOperation = 'replace' | 'append' | 'prepend' | 'incr' | 'decr';
+export type PatchOperation = 'replace' | 'append' | 'prepend' | 'incr' | 'decr' | 'remove';
 
 /**
  * Application model instance
@@ -399,14 +402,30 @@ export interface AppModel {
  * `UpdateUserCommand` send, and what a `model_updated` event delivers. The
  * server uses a single schema for all three, and the transport's patches are
  * that same shape with the server-side metadata stripped.
+ *
+ * Narrowed by `op`: a `remove` patch's values are {@link JsonPatchRemoveValue}s,
+ * every other operation's are field values.
  */
-export interface JsonPatch {
+export type JsonPatch =
+  | JsonPatchOf<Exclude<PatchOperation, 'remove'>, any>
+  | JsonPatchOf<'remove', JsonPatchRemoveValue>;
+
+/**
+ * The fields of a {@link JsonPatch} whose operation is `Op` and whose values
+ * are `Value`s.
+ */
+interface JsonPatchOf<Op extends PatchOperation, Value> {
   /**
    * - `replace`: set the field
-   * - `append` / `prepend`: add to the end / start of an array or string
-   * - `incr` / `decr`: add to / subtract from a number
+   * - `append` / `prepend`: add an element to the end / start of an array, or
+   *   text to the end / start of a string
+   * - `incr` / `decr`: add to / subtract from a number or a date
+   * - `remove`: take elements out of an array — see {@link JsonPatchRemoveValue}
+   *
+   * A field with no value yet starts as 0 for `incr` / `decr`, and as an empty
+   * array or string for `append` / `prepend`; `remove` leaves it alone.
    */
-  op: PatchOperation;
+  op: Op;
 
   /**
    * Dot-separated field paths, e.g. `details.age`. Each must be declared in
@@ -419,10 +438,25 @@ export interface JsonPatch {
    *
    * A date may be sent as a UNIX timestamp in **seconds** or as a parseable
    * date string; both are stored as seconds. Never milliseconds — `Date.now()`
-   * would land some fifty thousand years in the future.
+   * would land some fifty thousand years in the future. For `incr` / `decr` on
+   * a date, the value is the number of seconds to move it by.
    */
-  value: any[];
+  value: Value[];
 }
+
+/**
+ * The value of a `remove` patch, one per path:
+ *
+ * - `{ v }` removes every element equal to `v`. Arrays of strings, numbers,
+ *   booleans or dates only; a date is given as for any other value.
+ * - `{ i }` removes the element at zero-based index `i`, and nothing when the
+ *   array is shorter. The only way to remove from an array of objects.
+ *
+ * Several removals in one patch apply in order, each to what the one before it
+ * left: `path: ['tags', 'tags'], value: [{ v: 'archived' }, { i: 0 }]` removes
+ * every `'archived'`, then the first element that remains.
+ */
+export type JsonPatchRemoveValue = { v: string | number | boolean } | { i: number };
 
 /**
  * Identity fields shared by updated/deleted events. (The full model is only
@@ -432,6 +466,12 @@ export interface ModelIdentity {
   id: string;
   type: string;
   appId: string;
+
+  /**
+   * The user who owns the record — the one who created it — which isn't
+   * necessarily the one who made this change. Absent on an application without
+   * authentication.
+   */
   userId?: string;
 }
 
