@@ -997,7 +997,11 @@ export class NexxusClient extends EventEmitter {
             // `undefined + 1` is NaN, so every comparison below failed.)
             void this.resync(channel, model.type, model.id);
           } else if (model.version === local.version + 1) {
-            channel.applyPatches(model.id, patches, model.version);
+            if (!channel.applyPatches(model.id, patches, model.version)) {
+              // A patch the copy can't follow exactly — an `append` to a field
+              // with no value yet, say — so fetch the object instead.
+              void this.resync(channel, model.type, model.id);
+            }
           } else if (model.version > local.version + 1) {
             // Missed at least one update — resync instead of applying a stale delta.
             void this.resync(channel, model.type, model.id);
@@ -1017,8 +1021,9 @@ export class NexxusClient extends EventEmitter {
 
   /**
    * Fetch the current full model and version-guarded-upsert it into the channel.
-   * Used when an update targets an object missing from the channel's view, or
-   * when there's a version gap (applying a delta to a stale base would corrupt it).
+   * Used when an update targets an object missing from the channel's view,
+   * when there's a version gap (applying a delta to a stale base would corrupt
+   * it), or when the channel can't apply an update's patches exactly.
    * Fire-and-forget: failures surface via the client 'error' event, and the next
    * update for the object re-triggers a resync, so it self-heals.
    */

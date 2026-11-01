@@ -33,6 +33,11 @@ export interface DeleteModelOutput {
  * This operation is asynchronous - the request is queued to the Writer Worker
  * which removes the data and notifies subscribed clients.
  *
+ * A write the message queue doesn't confirm fails with
+ * `ServiceUnavailableException` (`503`) and can be retried. One that was
+ * accepted but fails to apply is retried for a few seconds, so its event can
+ * arrive late; if it keeps failing, it's dropped and no event is published.
+ *
  * @example
  * ```typescript
  * const client = new NexxusClient({ baseUrl: 'http://localhost:3000', appId: 'myapp', store });

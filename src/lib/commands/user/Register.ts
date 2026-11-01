@@ -37,11 +37,24 @@ export interface RegisterUserInput {
 export type RegisterUserOutput = SessionResponse;
 
 /**
- * Command to register a new user with local authentication.
+ * Command to register a user with local authentication.
  *
- * Registration now authenticates you: this returns a token and the account's
- * first device, so there is no follow-up login call. Doing one anyway would
- * resolve a *second* device for the same client.
+ * Registration signs you in: this returns a session on a new device, so there
+ * is no follow-up login call. Doing one anyway would resolve a *second* device
+ * for the same client.
+ *
+ * If the username already exists and the password is that account's, it signs
+ * in to that account instead: `accountCreated` is `false`, the user type and
+ * details sent are ignored, and the account gains a new device. Any other
+ * password — or an account created through an OAuth provider, which has none —
+ * fails with `UserAlreadyExistsException` (`409`).
+ *
+ * So sign a returning user in with {@link AuthLocalCommand} instead: it reuses
+ * the device this client has stored, where every registration adds one.
+ *
+ * Two registrations for the same username at the same moment end with a single
+ * account. One still waiting after a few seconds fails with
+ * `ServiceUnavailableException` (`503`); retrying it works.
  *
  * The device is created unnamed. Naming it is a separate call to the device
  * route afterwards — the register endpoint has no device input.
@@ -54,6 +67,7 @@ export type RegisterUserOutput = SessionResponse;
  *   password: 'SecureP@ssw0rd'
  * }));
  * console.log('User ID:', result.user.id);  // already signed in
+ * console.log(result.accountCreated);       // false if the account already existed
  * ```
  */
 export class RegisterUserCommand extends SessionCommand<RegisterUserInput, RegisterUserOutput> {
@@ -62,10 +76,10 @@ export class RegisterUserCommand extends SessionCommand<RegisterUserInput, Regis
   }
 
   /**
-   * Takes nothing from the client's identity. Registration always creates the
-   * account's first device and accepts no say in it, so there is no stored id
-   * to attach and nothing to negotiate — the id travels the other way, out of
-   * the response and into later logins.
+   * Takes nothing from the client's identity. Registration always creates a
+   * new device and accepts no say in it, so there is no stored id to attach and
+   * nothing to negotiate — the id travels the other way, out of the response
+   * and into later logins.
    */
   public resolveRequest() {
     return {

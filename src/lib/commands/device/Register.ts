@@ -64,6 +64,9 @@ export interface RegisterDeviceOutput extends SessionTokens {
  * To *reuse* a device, do nothing — the client replays the stored device id as
  * a hint when it authenticates.
  *
+ * On an application with authentication, it fails with `NotFoundException`
+ * (`404`) when the account no longer exists, and creates no device.
+ *
  * @example
  * ```typescript
  * // An application with no authentication: this is the bootstrap.

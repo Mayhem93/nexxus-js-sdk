@@ -37,6 +37,11 @@ export interface UpdateModelOutput {
  * This operation is asynchronous - the request is queued to the Writer Worker
  * which applies the patches and notifies subscribed clients.
  *
+ * A write the message queue doesn't confirm fails with
+ * `ServiceUnavailableException` (`503`) and can be retried. One that was
+ * accepted but fails to apply is retried for a few seconds, so its event can
+ * arrive late; if it keeps failing, it's dropped and no event is published.
+ *
  * @example
  * ```typescript
  * const client = new NexxusClient({ baseUrl: 'http://localhost:3000', appId: 'myapp', store });
@@ -72,14 +77,28 @@ export interface UpdateModelOutput {
  *
  * @example
  * ```typescript
- * // Append to an array
+ * // Append an element to an array (one element per path)
  * const command = new UpdateModelCommand({
  *   id: 'task_abc123',
  *   type: 'task',
  *   patch: {
  *     op: 'append',
  *     path: ['tags'],
- *     value: [['urgent', 'backend']]
+ *     value: ['urgent']
+ *   }
+ * });
+ * ```
+ *
+ * @example
+ * ```typescript
+ * // Remove from an array: every 'archived' tag, then the first remaining one
+ * const command = new UpdateModelCommand({
+ *   id: 'task_abc123',
+ *   type: 'task',
+ *   patch: {
+ *     op: 'remove',
+ *     path: ['tags', 'tags'],
+ *     value: [{ v: 'archived' }, { i: 0 }]
  *   }
  * });
  * ```

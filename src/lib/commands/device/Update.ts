@@ -11,8 +11,8 @@ export interface UpdateDeviceInput {
   /**
    * Human-readable name, shown in the user's device list.
    *
-   * This is how a device gets named after the fact — registration creates the
-   * account's first device unnamed, and takes no device input.
+   * This is how a device gets named after the fact — registration creates its
+   * device unnamed, and takes no device input.
    */
   name: string;
 }

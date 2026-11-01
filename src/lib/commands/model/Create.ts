@@ -32,6 +32,11 @@ export interface CreateModelOutput {
  * This operation is asynchronous - the request is queued to the Writer Worker
  * which persists the data and notifies subscribed clients.
  *
+ * A write the message queue doesn't confirm fails with
+ * `ServiceUnavailableException` (`503`) and can be retried. One that was
+ * accepted but fails to apply is retried for a few seconds, so its event can
+ * arrive late; if it keeps failing, it's dropped and no event is published.
+ *
  * The `userId` field is automatically added from the authenticated user.
  * System fields (`id`, `createdAt`, `updatedAt`, `appId`) are added automatically.
  *
