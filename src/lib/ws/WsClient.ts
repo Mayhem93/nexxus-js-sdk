@@ -31,15 +31,25 @@ export interface WsClientConfig {
  * WebSocket client that works in both Node.js and browser environments.
  *
  * Events:
- * - `registered` — the worker accepted a `register` frame.
+ * - `registered` ({@link TransportRegisterAck}) — the worker accepted a
+ *   `register` frame; the ack carries the connection's id.
  * - `token_refreshed` — the worker accepted a `refresh_access_token` frame.
  * - `transport_error` ({@link TransportErrorData}) — the worker refused a frame.
- * - `closed` ({@link TransportDisconnect}) — the connection closed, from
- *   either end.
+ * - `closed` ({@link TransportDisconnect}, `closedByClient`) — the connection
+ *   closed, from either end. `closedByClient` is `true` when {@link disconnect}
+ *   closed it, and `false` when the server or the network did.
  * - `error` — a frame could not be parsed.
  */
 export class WsClient extends EventEmitter {
   private ws: WebSocket | WSWebSocket | null = null;
+  /**
+   * Bumped by every `connect` and `disconnect`, so a `connect` still loading
+   * the `ws` package can tell, once it has, that it was cancelled or
+   * overtaken meanwhile — and not open a socket nobody wants.
+   */
+  private generation = 0;
+  /** How the current socket closed, if it has; reset when the next one opens. */
+  private lastClose?: TransportDisconnect;
   private config: WsClientConfig;
   private isBrowser: boolean;
 
@@ -55,19 +65,31 @@ export class WsClient extends EventEmitter {
    * Uses native WebSocket in browsers, 'ws' package in Node.js
    *
    * A connection that is already open is closed first: two live sockets would
-   * both claim the device, and their close events would be indistinguishable.
+   * register two connections of the device, and their close events would be
+   * indistinguishable.
    */
   public async connect(onMessage: (payload: TransportModelEventData) => void): Promise<void> {
     this.disconnect();
 
+    const generation = this.generation;
+
     return new Promise(async (resolve, reject) => {
       try {
         if (this.isBrowser) {
+          this.lastClose = undefined;
           this.ws = new window.WebSocket(this.config.url, this.config.protocols);
         } else {
           const { WebSocket } = await import('ws');
+
+          if (generation !== this.generation) {
+            reject(new Error('The connection was closed before it opened'));
+
+            return;
+          }
+
           const options = this.config.headers ? { headers: this.config.headers } : undefined;
 
+          this.lastClose = undefined;
           this.ws = new WebSocket(this.config.url, this.config.protocols, options);
         }
 
@@ -82,6 +104,8 @@ export class WsClient extends EventEmitter {
    * Closes the WebSocket connection. `closed` follows once the close completes.
    */
   public disconnect(code?: number, reason?: string): void {
+    this.generation++;
+
     if (this.ws) {
       this.ws.close(code, reason);
       this.ws = null;
@@ -93,6 +117,16 @@ export class WsClient extends EventEmitter {
    */
   public isConnected(): boolean {
     return this.ws !== null && (this.ws.readyState === WebSocket.CONNECTING || this.ws.readyState === WebSocket.OPEN);
+  }
+
+  /** Whether the current socket is in its closing handshake. */
+  public isClosing(): boolean {
+    return this.ws !== null && this.ws.readyState === WebSocket.CLOSING;
+  }
+
+  /** How the current socket closed — until the next one opens. */
+  public getLastClose(): TransportDisconnect | undefined {
+    return this.lastClose;
   }
 
   /**
@@ -110,9 +144,17 @@ export class WsClient extends EventEmitter {
    * One registration per connection may be in flight: the worker drops a
    * second `register` frame sent before the first is acknowledged, so callers
    * must await the ack rather than pipelining.
+   *
+   * `previousConnectionId` names a connection of the device that closed
+   * without this client closing it, so the server ends it at once instead of
+   * holding it, subscriptions and all, until it notices. Left out of the frame
+   * when there is none.
    */
-  public register(token: string): void {
-    this.sendFrame('register', token);
+  public register(token: string, previousConnectionId?: string): void {
+    this.sendFrame({
+      event: 'register',
+      data: previousConnectionId === undefined ? { token } : { token, previousConnectionId },
+    });
   }
 
   /**
@@ -122,15 +164,13 @@ export class WsClient extends EventEmitter {
    * running on the token it had.
    */
   public refreshAccessToken(token: string): void {
-    this.sendFrame('refresh_access_token', token);
+    this.sendFrame({ event: 'refresh_access_token', data: { token } });
   }
 
-  private sendFrame(event: TransportClientMessage['event'], token: string): void {
+  private sendFrame(frame: TransportClientMessage): void {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       throw new Error('WebSocket is not connected');
     }
-
-    const frame: TransportClientMessage = { event, data: { token } };
 
     this.ws.send(JSON.stringify(frame));
   }
@@ -139,6 +179,10 @@ export class WsClient extends EventEmitter {
    * Sets up event handlers for both browser and Node.js WebSocket implementations.
    * Both environments funnel incoming frames through `handleIncoming`, and
    * closes through `handleClose`.
+   *
+   * Frames from a socket that is no longer the current one — disconnected, or
+   * replaced — are dropped: a late reply on an old socket would otherwise be
+   * taken for the answer to a registration on the new one.
    */
   private setupEventHandlers(onOpen: () => void, onMessage: (payload: TransportModelEventData) => void, onError: (error: any) => void): void {
     const socket = this.ws;
@@ -153,7 +197,11 @@ export class WsClient extends EventEmitter {
 
       browserWs.onopen = () => onOpen();
       browserWs.onerror = (error: Event | ErrorEvent) => onError(error);
-      browserWs.onmessage = (event: MessageEvent) => this.handleIncoming(event.data, onMessage);
+      browserWs.onmessage = (event: MessageEvent) => {
+        if (this.ws === socket) {
+          this.handleIncoming(event.data, onMessage);
+        }
+      };
       browserWs.onclose = (event: CloseEvent) => this.handleClose(socket, event.code, event.reason);
     } else {
       // Node.js 'ws' uses the EventEmitter pattern
@@ -162,7 +210,9 @@ export class WsClient extends EventEmitter {
       nodeWs.on('open', () => onOpen());
       nodeWs.on('error', (error: Error) => onError(error));
       nodeWs.on('message', (data: Buffer | string) => {
-        this.handleIncoming(typeof data === 'string' ? data : data.toString(), onMessage);
+        if (this.ws === socket) {
+          this.handleIncoming(typeof data === 'string' ? data : data.toString(), onMessage);
+        }
       });
       nodeWs.on('close', (code: number, reason: Buffer) => this.handleClose(socket, code, reason.toString()));
     }
@@ -171,18 +221,22 @@ export class WsClient extends EventEmitter {
   /**
    * Report a closed connection — unless it is one a newer `connect` already
    * replaced, whose close is old news. A socket this client disconnected
-   * itself still reports: `this.ws` is already `null` for it.
+   * itself still reports: `this.ws` is already `null` for it, which is also
+   * what tells its close apart from one the server or the network made.
    */
   private handleClose(socket: WebSocket | WSWebSocket, code: number, reason: string): void {
     if (this.ws !== socket && this.ws !== null) {
       return;
     }
 
+    const closedByClient = this.ws === null;
+
     this.ws = null;
 
     const event: TransportDisconnect = { code, reason };
 
-    this.emit('closed', event);
+    this.lastClose = event;
+    this.emit('closed', event, closedByClient);
   }
 
   /**

@@ -15,6 +15,13 @@ export interface NexxusClientConfig {
   transportUri?: string;
 
   /**
+   * Reconnect the realtime transport on its own after the server or the
+   * network drops it — every 2 seconds, until a connection registers again.
+   * On by default; `false` leaves reconnecting to you.
+   */
+  reconnect?: boolean;
+
+  /**
    * Application identifier (required header: nxx-app-id)
    */
   appId: string;
@@ -32,10 +39,12 @@ export interface NexxusClientConfig {
   store?: IdentityStore;
 
   /**
-   * Logger configuration. The client always logs to stdout/console; this only
-   * controls level and format. Consumers can attach additional transports
-   * (file in Node, network shipping in the browser, etc.) on the public
-   * `client.logger` instance.
+   * Level and format for the SDK's logger, `NexxusClient.logger`. It always
+   * logs to stdout/console; attach additional transports (file in Node,
+   * network shipping in the browser, etc.) on it.
+   *
+   * The logger is shared by every client in the process: the last one
+   * constructed with a `logging` config sets its level and format.
    */
   logging?: LoggingConfig;
 }
@@ -46,7 +55,7 @@ export interface NexxusClientConfig {
 export type LogLevel = 'silly' | 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'fatal';
 
 /**
- * Configuration for the client's logger.
+ * Level and format for the SDK's logger, `NexxusClient.logger`.
  */
 export interface LoggingConfig {
   /**
@@ -87,11 +96,8 @@ export interface HttpResponse {
 }
 
 /**
- * A device record as the device routes return it.
- *
- * The wire object also carries an empty `subscriptions` array — these routes
- * read a device without hydrating its subscriptions, so it is always `[]` and
- * is deliberately not modelled here.
+ * A device record as the device routes return it. Nothing in it says whether
+ * the device has a connection open: no route does.
  */
 export interface Device {
   id: string;
@@ -104,30 +110,10 @@ export interface Device {
   userId?: string;
 
   /**
-   * How the device's transport behaves. `unknown` until it registers with one,
-   * at which point it becomes `volatile` (connection-oriented, subscriptions
-   * live only while connected) or `persistent` (push-style, subscriptions
-   * outlive the connection).
-   */
-  type: 'volatile' | 'persistent' | 'unknown';
-
-  /**
-   * Reachability. Absent on a device that has never registered with a
-   * transport — a freshly created one, for instance. Once set it is
-   * overwritten, never cleared.
-   */
-  status?: 'online' | 'offline' | 'unknown';
-
-  /**
-   * The transport carrying this device, or `null` when it is not connected.
-   * Absent until the device first registers with one.
-   */
-  transport?: string | null;
-
-  /**
-   * When the device was last seen online, as an **ISO 8601 string** — the one
-   * date in the API that is not an integer UNIX timestamp. Volatile devices
-   * only; absent on one that has never connected.
+   * When a connection of the device last registered, or a sign-in last reused
+   * the device, as an **ISO 8601 string** — the one date in the API that is not
+   * an integer UNIX timestamp. A connection closing doesn't change it. Absent
+   * until one of them happens.
    */
   lastSeen?: string;
 }
@@ -530,10 +516,39 @@ export type TransportModelEventData =
   | TransportModelUpdatedData
   | TransportModelDeletedData;
 
-/** Server → client acknowledgement of a `register` or `refresh_access_token` frame. */
+/**
+ * Why the client fetched a model instead of applying an update to a channel's
+ * copy, as logged on its `resync` lines.
+ *
+ * - `not_in_channel` — the channel doesn't hold the object; it's outside the
+ *   page the subscription loaded, for instance.
+ * - `no_version` — the channel holds the object without a version, so there is
+ *   nothing to order the update against.
+ * - `version_gap` — the update is more than one version ahead of the copy: at
+ *   least one update was missed.
+ * - `patch_not_applied` — the copy couldn't follow a patch exactly, such as an
+ *   `append` to a field with no value yet.
+ */
+export type ResyncReason = 'not_in_channel' | 'no_version' | 'version_gap' | 'patch_not_applied';
+
+/**
+ * Server → client acknowledgement of a `refresh_access_token` frame. A
+ * `register` frame's adds the connection's id — {@link TransportRegisterAck}.
+ */
 export interface TransportAck {
   success: boolean;
   message?: string;
+}
+
+/**
+ * Server → client acknowledgement of a `register` frame.
+ *
+ * `connectionId` names the connection this socket now is: a device can hold
+ * several at once, one per socket, and subscriptions belong to one of them.
+ * Every socket gets its own id, so a reconnect gets a new one.
+ */
+export interface TransportRegisterAck extends TransportAck {
+  connectionId: string;
 }
 
 /**
@@ -570,7 +585,7 @@ export interface TransportErrorData {
  * discriminated union of all frames the transport can send.
  */
 export type TransportServerMessage =
-  | { event: 'register'; data: TransportAck }
+  | { event: 'register'; data: TransportRegisterAck }
   | { event: 'refresh_access_token'; data: TransportAck }
   | { event: 'error'; data: TransportErrorData }
   | { event: 'model_created'; data: TransportModelCreatedData }
@@ -578,35 +593,73 @@ export type TransportServerMessage =
   | { event: 'model_deleted'; data: TransportModelDeletedData };
 
 /**
- * Client → server frames. Both carry an access token and nothing else — never
- * the refresh token, which goes to the refresh and logout routes only.
+ * Client → server frames. Both carry an access token — never the refresh
+ * token, which goes to the refresh and logout routes only.
  *
  * - `register` claims, on this connection, the device the token names. A
  *   device id alone is not accepted: the worker verifies the token and reads
  *   the device from its claims, so a client can only register its own.
+ *   `previousConnectionId` names a connection of the device that closed
+ *   without the client closing it; the server ends it, with its
+ *   subscriptions, before this one registers. Left out when there is none —
+ *   `null` is refused.
  * - `refresh_access_token` moves an already registered connection onto a newer
  *   token for the same device, so it keeps going without reconnecting.
  */
-export interface TransportClientMessage {
-  event: 'register' | 'refresh_access_token';
-  data: {
-    token: string;
-  };
-}
+export type TransportClientMessage =
+  | { event: 'register'; data: { token: string; previousConnectionId?: string } }
+  | { event: 'refresh_access_token'; data: { token: string } };
 
 /**
- * Payload of the client's `disconnected` event.
+ * How a transport connection closed: its WebSocket close code and reason. The
+ * client's `disconnected` event carries it, as {@link DisconnectedEvent}.
  *
  * The server closes with its own codes when it ends a connection:
- * - `4001` (`logged_out`) — the device's session was ended by a logout. The
- *   client ends its session too; don't reconnect.
+ * - `4001` (`logged_out`) — a logout ended the device's session and closed
+ *   every connection of the device. The client ends its session too, and
+ *   doesn't reconnect.
  * - `4002` (`token_expired`) — the connection's access token expired before a
- *   newer one reached it.
+ *   newer one reached it. The client reconnects, refreshing first.
+ * - `4003` (`evicted`) — the device went over its application's connection
+ *   cap, and this was its oldest connection. Not reconnected: the new
+ *   connection would evict the device's next-oldest in turn.
+ * - `1012` (`service_restart`) — the server instance is shutting down, or can
+ *   no longer deliver events. The client reconnects.
+ * - `1013` (`try_again_later`) — the server instance can't take connections
+ *   right now. It closes a new socket before `register` is answered, so this
+ *   surfaces as a `NexxusTransportClosedError`, not a `disconnected`;
+ *   reconnect attempts wait longer after each one.
  *
- * Any other code is an ordinary close, the client's own included. After any
- * disconnect the server has dropped the device's subscriptions.
+ * `1006` is a close without a close frame: the network dropped, or the server
+ * cut off a connection that stopped answering its pings. The client
+ * reconnects. Any other code is an ordinary close, the client's own included.
+ *
+ * Whatever the code, the connection's subscriptions closed with it. The
+ * device's other connections keep theirs.
  */
 export interface TransportDisconnect {
   code: number;
   reason: string;
+}
+
+/** Payload of the client's `disconnected` event. */
+export interface DisconnectedEvent extends TransportDisconnect {
+  /**
+   * Whether the client will reconnect on its own: `true` after the server or
+   * the network dropped the connection; `false` after a close the client made,
+   * a logout (`4001`), an eviction (`4003`), or with `reconnect: false`.
+   *
+   * Reconnecting that stops because an attempt was closed with `4001` or
+   * `4003` is reported by one more `disconnected`, with `false`.
+   */
+  willReconnect: boolean;
+}
+
+/** Payload of the client's `reconnecting` event. */
+export interface ReconnectingEvent {
+  /** Which attempt this is since the connection was lost, from 1. */
+  attempt: number;
+
+  /** How long the client waits before making it, in milliseconds. */
+  delayMs: number;
 }

@@ -3,8 +3,12 @@ import type {
   TransportModelEventData,
   TransportErrorData,
   TransportDisconnect,
+  TransportRegisterAck,
+  DisconnectedEvent,
+  ReconnectingEvent,
   SessionEndReason,
   SessionEndedEvent,
+  ResyncReason,
 } from './types';
 import { Command } from './Command';
 import { HttpHandler } from './HttpHandler';
@@ -14,8 +18,8 @@ import { CountCommand } from './commands/model/Count';
 import { RefreshCommand } from './commands/session/Refresh';
 import { LogoutCommand } from './commands/session/Logout';
 import { WsClient } from './ws/WsClient';
-import { NexxusError, NexxusTransportError } from './errors';
-import { createLogger } from './logger';
+import { NexxusError, NexxusTransportError, NexxusTransportClosedError } from './errors';
+import { createLogger, configureLogger } from './logger';
 import { IdentityStore, createDefaultStore, type StoredIdentity, type StoredIdentityPatch } from './storage';
 import EventEmitter from 'eventemitter3';
 import type { Logger, ILogObj } from 'tslog';
@@ -30,14 +34,34 @@ import type { Logger, ILogObj } from 'tslog';
  * holders present.
  *
  * Events:
- * - `connected` — the realtime transport is open and the device registered.
- * - `disconnected` ({@link TransportDisconnect}) — the transport closed, from
- *   either end. The client does not reconnect by itself.
+ * - `connected` — `initTransport()` opened the realtime transport and
+ *   registered the device on it.
+ * - `disconnected` ({@link DisconnectedEvent}) — the transport closed, from
+ *   either end; `willReconnect` says whether the client reconnects on its own.
+ * - `reconnecting` ({@link ReconnectingEvent}) — a reconnect attempt is
+ *   scheduled.
+ * - `reconnected` — an automatic reconnect registered a new connection. The
+ *   old connection's subscriptions went with it: subscribe again.
  * - `session_ended` ({@link SessionEndedEvent}) — the session is over and the
  *   user has to sign in again. The device id is kept.
  * - `error` — a background operation failed.
  */
 export class NexxusClient extends EventEmitter {
+  /**
+   * The SDK's logger, shared by every client in the process and by the SDK's
+   * own classes. Logs to stdout/console by default; attach more transports
+   * (file, remote shipping, …) here as needed for your environment.
+   *
+   * Created when the SDK loads, so it exists before any client does. A
+   * client's `logging` config sets its level and format; with several clients
+   * in one process, the last one constructed with a `logging` config decides.
+   *
+   * SDK classes that log through it import this module, which imports them
+   * back, so they read it inside methods only: at their module top level or
+   * in a static initializer it may not be defined yet.
+   */
+  public static readonly logger: Logger<ILogObj> = createLogger();
+
   /** Fraction of an access token's lifetime after which it is refreshed. */
   private static readonly REFRESH_AT = 0.9;
 
@@ -57,6 +81,25 @@ export class NexxusClient extends EventEmitter {
 
   /** Close code the transport uses when the device's session was ended by logout. */
   private static readonly CLOSE_LOGGED_OUT = 4001;
+
+  /**
+   * Close code for a connection evicted because its device went over the
+   * application's connection cap. Never reconnected: the new connection would
+   * evict the device's next-oldest in turn.
+   */
+  private static readonly CLOSE_EVICTED = 4003;
+
+  /** Close code for a server instance that can't take connections right now. */
+  private static readonly CLOSE_TRY_AGAIN_LATER = 1013;
+
+  /** Wait before each automatic reconnect attempt. */
+  private static readonly RECONNECT_DELAY_MS = 2_000;
+
+  /** Limit on one reconnect attempt: opening the socket and registering on it. */
+  private static readonly RECONNECT_ATTEMPT_TIMEOUT_MS = 2_000;
+
+  /** Longest wait between attempts, reached by doubling after consecutive `1013`s. */
+  private static readonly RECONNECT_MAX_DELAY_MS = 30_000;
 
   /**
    * The limit on any request made under the session lock that sets none of its
@@ -100,25 +143,45 @@ export class NexxusClient extends EventEmitter {
    * or the last one moved onto it. Unset while no connection is registered.
    */
   private transportToken?: string;
-
   /**
-   * The client's logger. Logs to stdout/console by default; attach more
-   * transports (file, remote shipping, …) here as needed for your environment.
+   * The id the worker gave the live connection when it registered. Its
+   * subscriptions are made and removed under it. Unset while no connection is
+   * registered.
    */
-  public readonly logger: Logger<ILogObj>;
+  private connectionId?: string;
+  /**
+   * A registered connection that closed without this client closing it — the
+   * server or the network did. Named in the next `register` as
+   * `previousConnectionId`, so the server ends it at once rather than holding
+   * it, subscriptions and all, until it notices.
+   */
+  private lostConnectionId?: string;
+
+  /** The wait before the next reconnect attempt, while one is pending. */
+  private reconnectTimer?: ReturnType<typeof setTimeout>;
+  /** Cancels the reconnect attempt under way. */
+  private reconnectAbort?: AbortController;
+  /** Attempts scheduled since the connection was lost. */
+  private reconnectAttempt = 0;
+  /** The wait before the next attempt; grows only over consecutive `1013`s. */
+  private reconnectDelayMs = NexxusClient.RECONNECT_DELAY_MS;
 
   constructor(config: NexxusClientConfig) {
     super();
 
     this.config = { ...config };
-    this.logger = createLogger(this.config.logging);
+
+    if (this.config.logging) {
+      configureLogger(NexxusClient.logger, this.config.logging);
+    }
+
     this.httpHandler = new HttpHandler();
     // Throws on Node when none was given, rather than silently running without
     // persistence — which costs a device record per process.
     this.store = this.config.store ?? createDefaultStore();
 
     if (!this.store.isPersistent()) {
-      this.logger.warn(
+      NexxusClient.logger.warn(
         'Identity store is not persistent — this client will register a new device on every run.',
         { label: 'identity' }
       );
@@ -132,10 +195,10 @@ export class NexxusClient extends EventEmitter {
 
     if (this.config.transportUri) {
       this.wsClient = new WsClient({ url: this.config.transportUri});
-      this.wsClient.on('closed', (event: TransportDisconnect) => this.onTransportClosed(event));
+      this.wsClient.on('closed', (event: TransportDisconnect, closedByClient: boolean) => this.onTransportClosed(event, closedByClient));
       this.wsClient.on('transport_error', (error: TransportErrorData) => this.onTransportError(error));
       this.wsClient.on('token_refreshed', () => {
-        this.logger.debug('transport: now running on the refreshed access token', { label: 'transport' });
+        NexxusClient.logger.debug('transport: now running on the refreshed access token', { label: 'transport' });
       });
     }
   }
@@ -148,42 +211,34 @@ export class NexxusClient extends EventEmitter {
    * authentication, register a device — before calling this.
    *
    * Once registered, the connection is moved onto every newer access token the
-   * client gets, so it keeps going across refreshes without reconnecting.
+   * client gets, so it keeps going across refreshes without reconnecting. If
+   * the server or the network drops it later, the client reconnects on its own
+   * (see `reconnected`); this call takes over from a reconnect under way.
    *
    * @throws {NexxusTransportError} when the worker refuses the registration.
    *   If it refused because the session is over, `session_ended` fires too.
+   * @throws {NexxusTransportClosedError} when the connection closes before the
+   *   worker answers — `1013` means try again later.
    */
   public async initTransport(): Promise<void> {
     if (!this.wsClient) {
       return;
     }
 
-    // Register with a token that has life left in it. One restored from
-    // storage may be past due, and the worker refuses an expired one.
-    await this.ensureFresh(true);
+    this.stopReconnecting();
 
-    if (!(await this.loadIdentity()).token) {
-      throw new Error(
-        'A token is required before initializing the transport. Authenticate, or register a device on an application without authentication.'
-      );
-    }
-
-    await this.wsClient.connect(this.handleChannelMessage.bind(this));
-
-    try {
-      await this.registerTransport();
-    } catch (error) {
-      // A connection whose device isn't registered receives nothing.
-      this.wsClient.disconnect();
-
-      throw error;
-    }
+    await this.prepareTransport();
+    await this.openTransport();
 
     this.emit('connected');
   }
 
-  /** Close the realtime transport. `disconnected` fires once it has closed. */
+  /**
+   * Close the realtime transport, and stop reconnecting. `disconnected` fires
+   * once it has closed.
+   */
   public disconnectTransport(): void {
+    this.stopReconnecting();
     this.wsClient?.disconnect();
   }
 
@@ -384,6 +439,9 @@ export class NexxusClient extends EventEmitter {
 
   /** One round trip: build the request, send it, and take in what came back. */
   private async execute<TInput, TOutput>(command: Command<TInput, TOutput>): Promise<TOutput> {
+    // Taken first: with no connection to name, the request is refused before
+    // it is built, let alone sent.
+    const connectionId = command.requiresConnection() ? this.registeredConnectionId() : undefined;
     const identity = await this.loadIdentity();
     const requestConfig = command.resolveRequest({ config: this.config, identity });
 
@@ -397,6 +455,10 @@ export class NexxusClient extends EventEmitter {
     // header asserting one would be ignored.
     if (identity.token && command.authEnabled()) {
       headers['Authorization'] = `Bearer ${identity.token}`;
+    }
+
+    if (connectionId !== undefined) {
+      headers['nxx-connection-id'] = connectionId;
     }
 
     const request = {
@@ -696,7 +758,7 @@ export class NexxusClient extends EventEmitter {
   }
 
   private logRefreshFailure(error: unknown): void {
-    this.logger.warn('session: refresh failed', {
+    NexxusClient.logger.warn('session: refresh failed', {
       label: 'session',
       error: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
     });
@@ -817,6 +879,65 @@ export class NexxusClient extends EventEmitter {
   // --- transport -----------------------------------------------------------
 
   /**
+   * Make sure there is a token to register with, and that it has life left in
+   * it: one restored from storage may be past due, and the worker refuses an
+   * expired one.
+   */
+  private async prepareTransport(): Promise<void> {
+    await this.ensureFresh(true);
+
+    if (!(await this.loadIdentity()).token) {
+      throw new Error(
+        'A token is required before initializing the transport. Authenticate, or register a device on an application without authentication.'
+      );
+    }
+  }
+
+  /**
+   * Open the socket and register this client's device on it. Aborting `signal`
+   * stops wherever this has got to, and closes the socket.
+   */
+  private async openTransport(signal?: AbortSignal): Promise<void> {
+    const ws = this.wsClient!;
+    const closeSocket = () => ws.disconnect();
+
+    signal?.addEventListener('abort', closeSocket, { once: true });
+
+    try {
+      const opening = (async () => {
+        await ws.connect(this.handleChannelMessage.bind(this));
+        await this.registerTransport(signal);
+      })();
+
+      await (signal ? Promise.race([opening, NexxusClient.whenAborted(signal)]) : opening);
+    } catch (error) {
+      // A connection whose device isn't registered receives nothing. An aborted
+      // one is closed already — and closing again now could hit the socket of
+      // whoever aborted it to connect themselves.
+      if (!signal?.aborted) {
+        ws.disconnect();
+      }
+
+      throw error;
+    } finally {
+      signal?.removeEventListener('abort', closeSocket);
+    }
+  }
+
+  /** A promise that rejects with the signal's reason once it aborts. */
+  private static whenAborted(signal: AbortSignal): Promise<never> {
+    return new Promise((_, reject) => {
+      if (signal.aborted) {
+        reject(signal.reason);
+
+        return;
+      }
+
+      signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+    });
+  }
+
+  /**
    * Claim this client's device on the open connection and wait for the verdict.
    *
    * A token that expired on the way is refreshed and the device registered
@@ -824,8 +945,12 @@ export class NexxusClient extends EventEmitter {
    * worker says is over, or a device that no longer exists, ends the session
    * here too: no refresh can fix either.
    */
-  private async registerTransport(): Promise<void> {
+  private async registerTransport(signal?: AbortSignal): Promise<void> {
     for (let attempt = 0; ; attempt++) {
+      // An abandoned registration must not go on to register on a socket that
+      // is no longer its own.
+      signal?.throwIfAborted();
+
       const { token } = await this.loadIdentity();
 
       if (!token) {
@@ -833,8 +958,12 @@ export class NexxusClient extends EventEmitter {
       }
 
       try {
-        await this.awaitRegistration(token);
+        const { connectionId } = await this.awaitRegistration(token, signal);
+
         this.transportToken = token;
+        this.connectionId = connectionId;
+        // Ended server-side as part of this registration.
+        this.lostConnectionId = undefined;
 
         return;
       } catch (error) {
@@ -858,42 +987,80 @@ export class NexxusClient extends EventEmitter {
   }
 
   /**
-   * Send `register` and settle on the worker's verdict. A refusal arrives as an
-   * error frame rather than a failed ack, and the connection can also close
-   * first — every outcome is listened for before the frame goes out, so none
-   * can race ahead or leave this waiting forever.
+   * The registered connection's id, for a command about its subscriptions.
+   * Without one there is nothing for the server to attach them to, so the
+   * command is refused here rather than sent to be refused with a `400`.
    */
-  private awaitRegistration(token: string): Promise<void> {
+  private registeredConnectionId(): string {
+    if (this.connectionId === undefined) {
+      throw new Error(
+        'No transport connection is registered — call initTransport() first. Subscriptions belong to a connection, and end when it closes.'
+      );
+    }
+
+    return this.connectionId;
+  }
+
+  /**
+   * Send `register` and settle on the worker's verdict: its ack, carrying the
+   * connection's id, or the refusal. A refusal arrives as an error frame rather
+   * than a failed ack, and the connection can also close first — every outcome
+   * is listened for before the frame goes out, so none can race ahead or leave
+   * this waiting forever. Aborting `signal` stops the wait, and stops listening.
+   */
+  private awaitRegistration(token: string, signal?: AbortSignal): Promise<TransportRegisterAck> {
     const ws = this.wsClient!;
 
-    return new Promise<void>((resolve, reject) => {
+    return new Promise<TransportRegisterAck>((resolve, reject) => {
+      if (signal?.aborted) {
+        reject(signal.reason);
+
+        return;
+      }
+
       const settle = () => {
         ws.off('registered', onRegistered);
         ws.off('transport_error', onError);
         ws.off('closed', onClosed);
+        signal?.removeEventListener('abort', onAbort);
       };
-      const onRegistered = () => {
+      const onRegistered = (ack: TransportRegisterAck) => {
         settle();
-        resolve();
+        resolve(ack);
       };
       const onError = (error: TransportErrorData) => {
         settle();
         reject(new NexxusTransportError(error));
       };
-      const onClosed = ({ code, reason }: TransportDisconnect) => {
+      const onClosed = (event: TransportDisconnect) => {
         settle();
-        reject(new Error(`The transport closed before the device was registered (${code}${reason ? `: ${reason}` : ''})`));
+        reject(new NexxusTransportClosedError(event));
+      };
+      const onAbort = () => {
+        settle();
+        reject(signal!.reason);
       };
 
       ws.on('registered', onRegistered);
       ws.on('transport_error', onError);
       ws.on('closed', onClosed);
+      signal?.addEventListener('abort', onAbort, { once: true });
 
       try {
-        ws.register(token);
+        ws.register(token, this.lostConnectionId);
       } catch (error) {
+        // Closing already: a server instance that can't take connections closes
+        // a new socket as soon as it opens. Its close code is what to report —
+        // still to come while the socket is closing, or just in.
+        if (ws.isClosing()) {
+          return;
+        }
+
         settle();
-        reject(error);
+
+        const closed = ws.getLastClose();
+
+        reject(closed ? new NexxusTransportClosedError(closed) : error);
       }
     });
   }
@@ -914,7 +1081,7 @@ export class NexxusClient extends EventEmitter {
     }
 
     if (!NexxusClient.sameDevice(token, current)) {
-      this.logger.debug('transport: the new token names another device; the connection keeps its registration', { label: 'transport' });
+      NexxusClient.logger.debug('transport: the new token names another device; the connection keeps its registration', { label: 'transport' });
 
       return;
     }
@@ -923,7 +1090,7 @@ export class NexxusClient extends EventEmitter {
       this.wsClient.refreshAccessToken(token);
       this.transportToken = token;
     } catch (error) {
-      this.logger.warn('transport: could not send the refreshed access token', {
+      NexxusClient.logger.warn('transport: could not send the refreshed access token', {
         label: 'transport',
         error: error instanceof Error ? error.message : String(error),
       });
@@ -941,21 +1108,27 @@ export class NexxusClient extends EventEmitter {
       return;
     }
 
-    this.logger.warn('transport: frame refused', { label: 'transport', code: error.code, message: error.message });
+    NexxusClient.logger.warn('transport: frame refused', { label: 'transport', code: error.code, error: error.message });
   }
 
   /**
-   * The connection closed, from either end. The client doesn't reconnect by
-   * itself: after any disconnect the server has dropped the device's
-   * subscriptions, so coming back means registering and subscribing again.
+   * The connection closed, from either end. Its subscriptions closed with it.
+   * A registered connection the client didn't close itself is remembered, for
+   * the next registration to end — and reconnected, unless the close says not
+   * to come back.
    *
    * A logout close (4001) ends the session here too — unless this client's own
    * logout already did, in which case there is nothing left to end.
    */
-  private onTransportClosed(event: TransportDisconnect): void {
+  private onTransportClosed(event: TransportDisconnect, closedByClient: boolean): void {
     const wasRegistered = this.transportToken !== undefined;
 
+    if (wasRegistered && !closedByClient) {
+      this.lostConnectionId = this.connectionId;
+    }
+
     this.transportToken = undefined;
+    this.connectionId = undefined;
 
     // A connection that never registered was never announced as connected, and
     // a closed client announces nothing: this close is the one `close()` began.
@@ -963,16 +1136,154 @@ export class NexxusClient extends EventEmitter {
       return;
     }
 
-    this.emit('disconnected', event);
+    const willReconnect = !closedByClient && this.reconnectsAfter(event.code);
+
+    this.emit('disconnected', { ...event, willReconnect } satisfies DisconnectedEvent);
 
     if (event.code === NexxusClient.CLOSE_LOGGED_OUT) {
       this.endSession('logged_out').catch(error => {
-        this.logger.warn('transport: could not end the session after a logout close', {
+        NexxusClient.logger.warn('transport: could not end the session after a logout close', {
           label: 'transport',
           error: error instanceof Error ? error.message : String(error),
         });
       });
     }
+
+    if (willReconnect) {
+      this.stopReconnecting();
+      this.scheduleReconnect();
+    }
+  }
+
+  /**
+   * Whether a connection the server or the network closed with `code` is
+   * reconnected. Not after a logout, which ended the session, nor after an
+   * eviction: the new connection would evict the device's next-oldest in turn,
+   * and the connections of one device would take turns evicting each other.
+   */
+  private reconnectsAfter(code: number): boolean {
+    return this.config.reconnect !== false
+      && code !== NexxusClient.CLOSE_LOGGED_OUT
+      && code !== NexxusClient.CLOSE_EVICTED;
+  }
+
+  /**
+   * Wait, then make the next reconnect attempt. The timer is not unref'd: while
+   * the client is reconnecting, it keeps a Node process alive the way the open
+   * socket did.
+   */
+  private scheduleReconnect(): void {
+    const delayMs = this.reconnectDelayMs;
+
+    this.reconnectAttempt++;
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = undefined;
+      this.attemptReconnect().catch(error => {
+        NexxusClient.logger.error('transport: reconnecting failed', {
+          label: 'transport',
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    }, delayMs);
+
+    this.emit('reconnecting', { attempt: this.reconnectAttempt, delayMs } satisfies ReconnectingEvent);
+  }
+
+  /**
+   * One reconnect attempt: what `initTransport()` does, with the open-and-
+   * register part limited in time. The limit starts once the token is fresh,
+   * because a refresh has a limit of its own.
+   */
+  private async attemptReconnect(): Promise<void> {
+    const attempt = new AbortController();
+
+    this.reconnectAbort = attempt;
+
+    try {
+      await this.prepareTransport();
+      attempt.signal.throwIfAborted();
+
+      const timer = setTimeout(() => attempt.abort(new NexxusError({
+        name: 'TimeoutError',
+        message: `The reconnect attempt timed out after ${NexxusClient.RECONNECT_ATTEMPT_TIMEOUT_MS} ms`,
+        statusCode: 0,
+      })), NexxusClient.RECONNECT_ATTEMPT_TIMEOUT_MS);
+
+      try {
+        await this.openTransport(attempt.signal);
+      } finally {
+        clearTimeout(timer);
+      }
+    } catch (error) {
+      // Stopped: the app took over, or the client closed. Theirs to go on from.
+      if (this.reconnectAbort !== attempt) {
+        return;
+      }
+
+      this.reconnectAbort = undefined;
+      this.afterFailedReconnect(error);
+
+      return;
+    }
+
+    // Stopped just as it registered: whoever stopped it decides what's next.
+    if (this.reconnectAbort !== attempt) {
+      return;
+    }
+
+    this.reconnectAbort = undefined;
+    this.reconnectAttempt = 0;
+    this.reconnectDelayMs = NexxusClient.RECONNECT_DELAY_MS;
+    this.emit('reconnected');
+  }
+
+  /**
+   * After a failed attempt, try again later — or stop, when the session ended
+   * or the server said not to come back.
+   */
+  private afterFailedReconnect(error: unknown): void {
+    const closedWith = error instanceof NexxusTransportClosedError ? error.code : undefined;
+
+    if (closedWith === NexxusClient.CLOSE_LOGGED_OUT || closedWith === NexxusClient.CLOSE_EVICTED) {
+      const { code, reason } = error as NexxusTransportClosedError;
+
+      this.stopReconnecting();
+      this.emit('disconnected', { code, reason, willReconnect: false } satisfies DisconnectedEvent);
+
+      return;
+    }
+
+    // No token means no session to register: a refusal ended it, or something
+    // else did meanwhile — and `session_ended` has said so.
+    if (this.identity?.token === undefined) {
+      this.stopReconnecting();
+
+      return;
+    }
+
+    NexxusClient.logger.debug('transport: reconnect attempt failed', {
+      label: 'transport',
+      attempt: this.reconnectAttempt,
+      error: error instanceof Error ? error.message : String(error),
+    });
+
+    this.reconnectDelayMs = closedWith === NexxusClient.CLOSE_TRY_AGAIN_LATER
+      ? Math.min(this.reconnectDelayMs * 2, NexxusClient.RECONNECT_MAX_DELAY_MS)
+      : NexxusClient.RECONNECT_DELAY_MS;
+    this.scheduleReconnect();
+  }
+
+  /** Cancel the pending attempt or the one under way, and start over next time. */
+  private stopReconnecting(): void {
+    const attempt = this.reconnectAbort;
+
+    clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = undefined;
+    this.reconnectAbort = undefined;
+    this.reconnectAttempt = 0;
+    this.reconnectDelayMs = NexxusClient.RECONNECT_DELAY_MS;
+
+    attempt?.abort(new Error('Reconnecting was stopped'));
   }
 
   // --- channels ------------------------------------------------------------
@@ -990,21 +1301,24 @@ export class NexxusClient extends EventEmitter {
         this.dispatchToChannels(payload.metadata.channels, (channel) => {
           const local = channel.get(model.id);
 
-          if (!local || local.version === undefined) {
-            // Not in our view slice, or held without a version to order this
-            // delta against — fetch the full current object rather than guess.
-            // (A version-less copy was previously dropped here in silence:
+          if (!local) {
+            // Not in our view slice — fetch the full current object rather
+            // than guess.
+            void this.resync(channel, model.type, model.id, 'not_in_channel');
+          } else if (local.version === undefined) {
+            // Held without a version to order this delta against, so fetch it
+            // too. (A version-less copy was previously dropped here in silence:
             // `undefined + 1` is NaN, so every comparison below failed.)
-            void this.resync(channel, model.type, model.id);
+            void this.resync(channel, model.type, model.id, 'no_version');
           } else if (model.version === local.version + 1) {
             if (!channel.applyPatches(model.id, patches, model.version)) {
               // A patch the copy can't follow exactly — an `append` to a field
               // with no value yet, say — so fetch the object instead.
-              void this.resync(channel, model.type, model.id);
+              void this.resync(channel, model.type, model.id, 'patch_not_applied');
             }
           } else if (model.version > local.version + 1) {
             // Missed at least one update — resync instead of applying a stale delta.
-            void this.resync(channel, model.type, model.id);
+            void this.resync(channel, model.type, model.id, 'version_gap');
           }
           // else: model.version <= local.version -> stale/duplicate, ignore.
         });
@@ -1021,21 +1335,20 @@ export class NexxusClient extends EventEmitter {
 
   /**
    * Fetch the current full model and version-guarded-upsert it into the channel.
-   * Used when an update targets an object missing from the channel's view,
-   * when there's a version gap (applying a delta to a stale base would corrupt
-   * it), or when the channel can't apply an update's patches exactly.
+   * Used when an update can't be applied to the channel's copy; `reason` says
+   * why ({@link ResyncReason}) and goes on the log lines.
    * Fire-and-forget: failures surface via the client 'error' event, and the next
    * update for the object re-triggers a resync, so it self-heals.
    */
-  private async resync(channel: Channel, type: string, id: string): Promise<void> {
-    // this.logger.debug('resync: fetching model', { label: 'resync', type, id, channel: channel.getName() });
+  private async resync(channel: Channel, type: string, id: string, reason: ResyncReason): Promise<void> {
+    // NexxusClient.logger.debug('resync: fetching model', { label: 'resync', reason, type, id, channel: channel.getName() });
 
     try {
       const { data } = await this.send(new GetModelCommand({ id, type }));
       channel.upsert(data);
-      this.logger.debug('resync: upserted', { label: 'resync', type, id, channel: channel.getName() });
+      NexxusClient.logger.debug('resync: upserted', { label: 'resync', reason, type, id, channel: channel.getName() });
     } catch (error) {
-      this.logger.error('resync: failed', { label: 'resync', type, id, channel: channel.getName(), error: error instanceof Error ? error.message : String(error) });
+      NexxusClient.logger.error('resync: failed', { label: 'resync', reason, type, id, channel: channel.getName(), error: error instanceof Error ? error.message : String(error) });
       this.emit('error', error);
     }
   }

@@ -14,21 +14,18 @@ const LEVELS = {
 const isBrowser = typeof window !== 'undefined' && typeof window.document !== 'undefined';
 
 /**
- * Builds the client's logger (tslog) from optional config. Logs to stdout/console
- * out of the box in both Node and the browser. Defaults: `'text'` (pretty) in the
- * browser for readability, `'json'` in Node; minimum level `'info'`.
+ * Builds the SDK's logger (tslog), at the default level and format — see
+ * {@link configureLogger}. Logs to stdout/console out of the box in both Node
+ * and the browser.
  *
- * The instance is exposed publicly as `client.logger`, so consumers can attach
- * more transports for their environment — e.g. a file sink in Node, or shipping
- * logs to a remote service in the browser — via `logger.attachTransport(...)`.
+ * The instance is exposed publicly as `NexxusClient.logger`, so consumers can
+ * attach more transports for their environment — e.g. a file sink in Node, or
+ * shipping logs to a remote service in the browser — via
+ * `logger.attachTransport(...)`.
  */
-export function createLogger(config: LoggingConfig = {}): Logger<ILogObj> {
-  const format = config.format ?? (isBrowser ? 'text' : 'json');
-
-  return new Logger<ILogObj>({
+export function createLogger(): Logger<ILogObj> {
+  const logger = new Logger<ILogObj>({
     name: 'nexxus',
-    type: format === 'text' ? 'pretty' : 'json',
-    minLevel: LEVELS[config.level ?? 'info'],
     // Skip per-log caller stack capture — it's a hot-path cost under load and
     // only points into SDK internals anyway.
     stylePrettyLogs: false,
@@ -71,4 +68,21 @@ export function createLogger(config: LoggingConfig = {}): Logger<ILogObj> {
       },
     },
   });
+
+  configureLogger(logger, {});
+
+  return logger;
+}
+
+/**
+ * Set the logger's level and format from a client's `logging` config. tslog
+ * reads both on every call, so a logger already in use follows at once.
+ * Defaults: `'text'` (pretty) in the browser for readability, `'json'` in
+ * Node; minimum level `'info'`.
+ */
+export function configureLogger(logger: Logger<ILogObj>, config: LoggingConfig): void {
+  const format = config.format ?? (isBrowser ? 'text' : 'json');
+
+  logger.settings.type = format === 'text' ? 'pretty' : 'json';
+  logger.settings.minLevel = LEVELS[config.level ?? 'info'];
 }
