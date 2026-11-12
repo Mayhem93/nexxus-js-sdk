@@ -1,4 +1,4 @@
-import type { TransportErrorCode, TransportErrorData } from './types';
+import type { TransportDisconnect, TransportErrorCode, TransportErrorData } from './types';
 
 /**
  * Parameters for constructing a {@link NexxusError}.
@@ -69,5 +69,27 @@ export class NexxusTransportError extends Error {
 
     this.name = 'NexxusTransportError';
     this.code = code;
+  }
+}
+
+/**
+ * The realtime transport closed while the client was registering on it, before
+ * the worker answered. Branch on {@link code}, the WebSocket close code:
+ *
+ * - `1013` — the server instance can't take connections right now; try again
+ *   later, waiting longer each time.
+ * - `4003` — another connection of the device took this one's place, over the
+ *   application's connection cap. Don't retry automatically.
+ */
+export class NexxusTransportClosedError extends Error {
+  public readonly code: number;
+  public readonly reason: string;
+
+  constructor({ code, reason }: TransportDisconnect) {
+    super(`The transport closed before the device was registered (${code}${reason ? `: ${reason}` : ''})`);
+
+    this.name = 'NexxusTransportClosedError';
+    this.code = code;
+    this.reason = reason;
   }
 }

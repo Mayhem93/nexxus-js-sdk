@@ -25,7 +25,7 @@ export type GetDeviceOutput = Device;
  * @example
  * ```typescript
  * const device = await client.send(new GetDeviceCommand({}));
- * console.log(device.name, device.status);
+ * console.log(device.name, device.lastSeen);
  * ```
  */
 export class GetDeviceCommand extends Command<GetDeviceInput, GetDeviceOutput> {

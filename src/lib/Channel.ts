@@ -1,6 +1,7 @@
 import { SubscribeOutput } from './commands/subscription/Subscribe';
 import type { CountInput } from './commands/model/Count';
 import { AppModel, ModelIdentity, ScopedModelQuery, JsonPatch } from './types';
+import { NexxusClient } from './Client';
 
 import EventEmitter from 'eventemitter3';
 import * as dot from 'dot-prop';
@@ -202,7 +203,7 @@ export class Channel extends EventEmitter<ChannelEvents> {
 
     // Ensure path and value arrays have the same length
     if (path.length !== value.length) {
-      console.warn(`Path and value arrays length mismatch in channel ${this.name}`);
+      NexxusClient.logger.warn('channel: path and value arrays length mismatch', { label: 'channel', channel: this.name, type: obj.type, id: obj.id, op });
       return false;
     }
 
@@ -234,7 +235,7 @@ export class Channel extends EventEmitter<ChannelEvents> {
               } else if (typeof currentValue === 'string') {
                 dot.setProperty(obj, fieldPath, currentValue + (fieldValue as string));
               } else {
-                console.warn(`Cannot append to non-array/non-string field ${fieldPath} in channel ${this.name}`);
+                NexxusClient.logger.warn('channel: cannot append to non-array/non-string field', { label: 'channel', channel: this.name, type: obj.type, id: obj.id, op, path: fieldPath });
                 return false;
               }
             }
@@ -256,7 +257,7 @@ export class Channel extends EventEmitter<ChannelEvents> {
               } else if (typeof currentValue === 'string') {
                 dot.setProperty(obj, fieldPath, (fieldValue as string) + currentValue);
               } else {
-                console.warn(`Cannot prepend to non-array/non-string field ${fieldPath} in channel ${this.name}`);
+                NexxusClient.logger.warn('channel: cannot prepend to non-array/non-string field', { label: 'channel', channel: this.name, type: obj.type, id: obj.id, op, path: fieldPath });
                 return false;
               }
             }
@@ -270,7 +271,7 @@ export class Channel extends EventEmitter<ChannelEvents> {
               if (typeof currentValue === 'number') {
                 dot.setProperty(obj, fieldPath, currentValue + (fieldValue as number));
               } else {
-                console.warn(`Cannot increment non-numeric field ${fieldPath} in channel ${this.name}`);
+                NexxusClient.logger.warn('channel: cannot increment non-numeric field', { label: 'channel', channel: this.name, type: obj.type, id: obj.id, op, path: fieldPath });
                 return false;
               }
             }
@@ -283,7 +284,7 @@ export class Channel extends EventEmitter<ChannelEvents> {
               if (typeof currentValue === 'number') {
                 dot.setProperty(obj, fieldPath, currentValue - (fieldValue as number));
               } else {
-                console.warn(`Cannot decrement non-numeric field ${fieldPath} in channel ${this.name}`);
+                NexxusClient.logger.warn('channel: cannot decrement non-numeric field', { label: 'channel', channel: this.name, type: obj.type, id: obj.id, op, path: fieldPath });
                 return false;
               }
             }
@@ -301,7 +302,7 @@ export class Channel extends EventEmitter<ChannelEvents> {
               }
 
               if (!Array.isArray(currentValue)) {
-                console.warn(`Cannot remove from non-array field ${fieldPath} in channel ${this.name}`);
+                NexxusClient.logger.warn('channel: cannot remove from non-array field', { label: 'channel', channel: this.name, type: obj.type, id: obj.id, op, path: fieldPath });
                 return false;
               }
 
@@ -316,18 +317,18 @@ export class Channel extends EventEmitter<ChannelEvents> {
                   }
                 }
               } else {
-                console.warn(`Invalid remove value for field ${fieldPath} in channel ${this.name}`);
+                NexxusClient.logger.warn('channel: invalid remove value', { label: 'channel', channel: this.name, type: obj.type, id: obj.id, op, path: fieldPath });
                 return false;
               }
             }
             break;
 
           default:
-            console.warn(`Unknown patch operation ${op} in channel ${this.name}`);
+            NexxusClient.logger.warn('channel: unknown patch operation', { label: 'channel', channel: this.name, type: obj.type, id: obj.id, op, path: fieldPath });
             return false;
         }
       } catch (error) {
-        console.warn(`Failed to apply ${op} operation on ${fieldPath} in channel ${this.name}:`, error);
+        NexxusClient.logger.warn('channel: failed to apply patch operation', { label: 'channel', channel: this.name, type: obj.type, id: obj.id, op, path: fieldPath, error: error instanceof Error ? error.message : String(error) });
         return false;
       }
     }

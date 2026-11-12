@@ -10,7 +10,7 @@ Its headline feature is **realtime channels** — a subscription returns a local
 - **Realtime channels** — subscribe to a query and get a `Channel`: a local materialized view that stays current as objects are created, updated, and deleted server-side.
 - **Version-aware sync** — every model carries a monotonic `version`; updates apply in order, and gaps or unknown objects trigger an automatic resync so a channel self-heals.
 - **Isomorphic** — the same package runs in Node and the browser (WebSocket transport adapts automatically).
-- **Built-in logger** — an isomorphic [tslog](https://tslog.js.org/) instance exposed as `client.logger`; attach your own transports (file, remote shipping, …).
+- **Built-in logger** — an isomorphic [tslog](https://tslog.js.org/) instance exposed as `NexxusClient.logger`, shared by every client in the process; attach your own transports (file, remote shipping, …).
 
 ## Requirements
 
@@ -191,7 +191,8 @@ when two holders refresh it independently. So everything that changes the
 session (sign-in, registration, refresh, logout) runs under a lock held across
 tabs, and each tab follows the others' changes. That lock needs the Web Locks
 API, which browsers only offer over HTTPS or on localhost; elsewhere, tabs
-refresh uncoordinated.
+refresh uncoordinated. Their realtime connections stay separate: each tab
+registers its own, with its own subscriptions.
 
 **In Node**, the refresh timer never keeps a process alive by itself, and
 `client.close()` stops it.
@@ -213,23 +214,51 @@ Once registered, the connection is moved onto every newer access token the
 client gets, so it survives refreshes without reconnecting.
 
 ```ts
-client.on('connected', () => { /* registered; subscriptions can start */ });
-client.on('disconnected', ({ code, reason }) => { /* see below */ });
+client.on('connected', () => { /* initTransport() registered: subscribe */ });
+client.on('disconnected', ({ code, reason, willReconnect }) => { /* subscriptions are gone */ });
+client.on('reconnecting', ({ attempt, delayMs }) => { /* e.g. show "reconnecting…" */ });
+client.on('reconnected', () => { /* a new connection: subscribe again */ });
 ```
 
-The client does **not** reconnect by itself. After any disconnect the server
-has dropped the device's subscriptions, so coming back means `initTransport()`
-and subscribing again. Two close codes come from the server:
+Subscriptions belong to the connection they were made on, and close with it.
+A device can hold several connections at once, one per socket: every tab or
+process sharing its session registers its own and subscribes on it. The
+application caps how many (`connections.maxPerDevice`, 20 by default);
+registering one more closes the device's oldest connection with `4003`.
+
+**Reconnecting.** When the server or the network drops the connection, the
+client reconnects on its own: it waits 2 seconds, tries for up to 2 seconds,
+and keeps at it until a connection registers. Then `reconnected` fires — not
+`connected`, which is for your own `initTransport()` — and that is where to
+subscribe again. Each subscription returns a new `Channel`, so move your
+listeners onto it.
+
+It doesn't reconnect after a close you made (`disconnectTransport()`,
+`logout()`, `close()`), after a logout (`4001`) or after an eviction (`4003`),
+and it stops when the session ends; `willReconnect` on `disconnected` says
+which. After repeated `1013`s it waits longer between tries, up to 30 seconds.
+Calling `initTransport()` yourself takes over from a reconnect under way. To
+handle reconnecting yourself, pass `reconnect: false`.
+
+The server closes with its own codes:
 
 | Code | Reason | Meaning |
 | --- | --- | --- |
-| `4001` | `logged_out` | The device was logged out. The client ends its session (`session_ended`). Don't reconnect. |
-| `4002` | `token_expired` | The connection's token expired before a newer one reached it. |
+| `4001` | `logged_out` | The device was logged out, closing every one of its connections. The client ends its session (`session_ended`) and doesn't reconnect. |
+| `4002` | `token_expired` | The connection's token expired before a newer one reached it. The client reconnects. |
+| `4003` | `evicted` | The device went over its application's connection cap, and this was its oldest connection. Not reconnected: the new connection would evict the next-oldest. |
+| `1012` | `service_restart` | The server instance is shutting down, or lost its message queue. The client reconnects. |
+| `1013` | `try_again_later` | The server instance can't take connections right now; it closes a new socket before `register`. Reconnect attempts wait longer each time. |
+
+`1006`, a close without a close frame, means the network dropped, or the server
+cut off a connection that stopped answering its pings. The client reconnects.
 
 If the worker refuses to register the device because its session is over, or
 the device no longer exists, `initTransport()` rejects with a
 `NexxusTransportError` and `session_ended` fires with `transport_rejected`.
-Branch on the error's `code`, never its message.
+Branch on the error's `code`, never its message. If the connection closes
+before the worker answers, it rejects with a `NexxusTransportClosedError`,
+whose `code` is the close code — `1013` means try again later.
 
 ### Channels
 
@@ -272,18 +301,18 @@ the subscription feeding it.
 
 ### Versioning & resync
 
-Each model has a monotonically increasing `version`. The client applies an update only when it's exactly one ahead of the local copy. It fetches the current object instead when it sees a version gap, an update for an object not in its view, or an update it can't apply exactly, such as an `append` to a field that has no value yet. So a channel converges to the correct state even if events are missed or arrive out of order.
+Each model has a monotonically increasing `version`. The client applies an update only when it's exactly one ahead of the local copy. It fetches the current object instead when it sees a version gap, an update for an object not in its view, or an update it can't apply exactly, such as an `append` to a field that has no value yet. So a channel converges to the correct state even if events are missed or arrive out of order. Each fetch is logged under the `resync` label with a `reason` (`ResyncReason`): `not_in_channel`, `no_version`, `version_gap` or `patch_not_applied`.
 
 ### Logging
 
-The client owns a public logger you can use and extend:
+The SDK has one public logger, shared by every client in the process, that you can use and extend:
 
 ```ts
-client.logger.info('hello', { label: 'app' });
-client.logger.attachTransport((logObj) => { /* ship somewhere */ });
+NexxusClient.logger.info('hello', { label: 'app' });
+NexxusClient.logger.attachTransport((logObj) => { /* ship somewhere */ });
 ```
 
-Defaults are environment-aware: pretty text in the browser, JSON in Node. Configure via the `logging` field (`level`, `format`).
+Defaults are environment-aware: pretty text in the browser, JSON in Node. Configure via the client's `logging` field (`level`, `format`); with several clients in one process, the last one constructed with a `logging` config sets them.
 
 ## Building from source
 

@@ -24,7 +24,7 @@ export interface UnsubscribeOutput {
 }
 
 /**
- * Command to remove a subscription from the calling device.
+ * Command to remove a subscription from this client's transport connection.
  *
  * **The descriptor must match the one that created the subscription.** The
  * channel key is derived deterministically from `type` + `id` + `userId` +
@@ -35,8 +35,9 @@ export interface UnsubscribeOutput {
  * On success the client also drops its local `Channel`, so a stale view cannot
  * linger after the server has stopped feeding it.
  *
- * Requires a connected transport, like subscribing does — a device with no
- * live transport gets `DeviceNotConnectedException`.
+ * Needs the connection, like subscribing does: with none registered, the
+ * command fails before sending anything. A subscription made on an earlier
+ * connection ended with it, so unsubscribing it on a new one is a `404`.
  *
  * @example
  * ```typescript
@@ -55,7 +56,7 @@ export interface UnsubscribeOutput {
  */
 export class UnsubscribeCommand extends Command<UnsubscribeInput, UnsubscribeOutput> {
   constructor(input: UnsubscribeInput) {
-    super(input, { authEnabled: true });
+    super(input, { authEnabled: true, requiresConnection: true });
   }
 
   public resolveRequest() {

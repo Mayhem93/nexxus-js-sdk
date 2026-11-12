@@ -23,8 +23,9 @@ export interface LogoutOutput {
  *
  * Answers `200` to any request carrying a refresh token, **whether or not a
  * session actually ended** — the server deliberately won't confirm which tokens
- * were live. The session ends for the whole device, and the server closes the
- * device's live transport connection with close code `4001`.
+ * were live. The session ends for the whole device, and the server closes every
+ * connection of the device — every tab or process using its session — with
+ * close code `4001`.
  *
  * The access token stays valid on the server until it expires. What stops this
  * client using it is dropping it locally: the client removes both tokens and

@@ -30,9 +30,11 @@ export interface SubscribeOutput {
 /**
  * Command to subscribe to a channel and receive its first page of data.
  *
- * Creates a subscription for the calling device — which the token names — so
- * it receives real-time updates. The device must already be connected to a
- * transport, or this fails with `DeviceNotConnectedException`.
+ * The subscription is made on this client's transport connection, and updates
+ * arrive over it. So call `initTransport()` first: with no connection
+ * registered, the command fails before sending anything. The subscription ends
+ * when the connection closes — and if the connection closes while subscribing,
+ * the server answers `DeviceNotConnectedException`.
  *
  * For a one-off query with no subscription and no channel, use
  * {@link SearchCommand} instead.
@@ -101,7 +103,7 @@ export interface SubscribeOutput {
  */
 export class SubscribeCommand extends Command<SubscribeInput, ReadonlyChannel> {
   constructor(input: SubscribeInput) {
-    super(input, { authEnabled: true });
+    super(input, { authEnabled: true, requiresConnection: true });
   }
 
   public resolveRequest() {

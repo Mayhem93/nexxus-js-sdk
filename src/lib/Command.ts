@@ -5,6 +5,13 @@ export type CommandOptions = {
   authEnabled?: boolean;
 
   /**
+   * The request is about the client's transport connection — its
+   * subscriptions. The client names the connection in the `nxx-connection-id`
+   * header, and refuses to send the command while none is registered.
+   */
+  requiresConnection?: boolean;
+
+  /**
    * Give up on the request after this many milliseconds. Unset means no limit
    * beyond the platform's own.
    */
@@ -51,16 +58,22 @@ export abstract class Command<TInput = {}, TOutput = {}> {
    */
   public readonly input: TInput;
   private readonly auth: boolean;
+  private readonly connection: boolean;
   private readonly timeout?: number;
 
   constructor(input: TInput, options: CommandOptions = {}) {
     this.input = input;
     this.auth = options.authEnabled ?? false;
+    this.connection = options.requiresConnection ?? false;
     this.timeout = options.timeoutMs;
   }
 
   public authEnabled(): boolean {
     return this.auth;
+  }
+
+  public requiresConnection(): boolean {
+    return this.connection;
   }
 
   public timeoutMs(): number | undefined {
