@@ -27,6 +27,11 @@ export interface RegisterUserInput {
    * The schema is closed: a field it does not declare is a `400`, not a
    * silently stored extra. Keys beginning with `$` are reserved for auth
    * strategies and are rejected.
+   *
+   * Details travel inside every access token, so keep them small: the
+   * realtime transport closes a connection whose frame is over its size limit
+   * (16 KiB unless the deployment raises it) with `1009`, and a token that
+   * outgrows it can't be used there.
    */
   [key: string]: any;
 }

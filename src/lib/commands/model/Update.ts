@@ -42,6 +42,9 @@ export interface UpdateModelOutput {
  * accepted but fails to apply is retried for a few seconds, so its event can
  * arrive late; if it keeps failing, it's dropped and no event is published.
  *
+ * A body over the deployment's size limit (64 KiB unless it sets another)
+ * fails with `PayloadTooLargeException` (`413`).
+ *
  * @example
  * ```typescript
  * const client = new NexxusClient({ baseUrl: 'http://localhost:3000', appId: 'myapp', store });
@@ -58,7 +61,7 @@ export interface UpdateModelOutput {
  *   }
  * });
  * const result = await client.send(command);
- * console.log(result.message); // "Model update queued successfully"
+ * console.log(result.message); // "Model updated successfully!"
  * ```
  *
  * @example

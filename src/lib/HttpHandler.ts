@@ -9,9 +9,10 @@ export class HttpHandler {
    * Executes an HTTP request
    * @param request - HTTP request metadata
    * @returns HTTP response metadata
-   * @throws {NexxusError} on non-2xx responses (`name` = server error type), on
-   *   a transport failure (`name` = `"NetworkError"`, `statusCode` = `0`), or
-   *   when `timeoutMs` runs out (`name` = `"TimeoutError"`, `statusCode` = `0`)
+   * @throws {NexxusError} on non-2xx responses (`name` = server error type,
+   *   `retryAfter` from `Retry-After`), on a transport failure (`name` =
+   *   `"NetworkError"`, `statusCode` = `0`), or when `timeoutMs` runs out
+   *   (`name` = `"TimeoutError"`, `statusCode` = `0`)
    */
   public async handle(request: HttpRequest): Promise<HttpResponse> {
     let response: Response;
@@ -64,7 +65,12 @@ export class HttpHandler {
         // Non-JSON error body — keep the raw text / status text from above.
       }
 
-      throw new NexxusError({ name, message, statusCode: response.status });
+      throw new NexxusError({
+        name,
+        message,
+        statusCode: response.status,
+        retryAfter: HttpHandler.retryAfterSeconds(response.headers.get('retry-after')),
+      });
     }
 
     return {
@@ -72,5 +78,15 @@ export class HttpHandler {
       headers: responseHeaders,
       body,
     };
+  }
+
+  /**
+   * `Retry-After` in the form the API sends it: a whole number of seconds.
+   * Missing, or in any other form, it reads as unknown.
+   */
+  private static retryAfterSeconds(header: string | null): number | undefined {
+    const value = header?.trim();
+
+    return value !== undefined && /^\d+$/.test(value) ? Number(value) : undefined;
   }
 }
