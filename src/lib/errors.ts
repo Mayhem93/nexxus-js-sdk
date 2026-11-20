@@ -20,6 +20,9 @@ export interface NexxusErrorParams {
 
   /** The underlying error, when this wraps another failure (e.g. a network error). */
   cause?: unknown;
+
+  /** Seconds to wait before sending the request again, from `Retry-After`. */
+  retryAfter?: number;
 }
 
 /**
@@ -29,8 +32,12 @@ export interface NexxusErrorParams {
  * on:
  * - API error response → `name` is the server error type (e.g.
  *   `"UserAlreadyExistsException"`) and `statusCode` is the HTTP status.
+ * - Rate limited → `name` is `"TooManyRequestsException"`, `statusCode` is
+ *   `429`, and {@link retryAfter} is the number of seconds to wait.
  * - Transport/network failure → `name` is `"NetworkError"`, `statusCode` is `0`,
- *   and the underlying error is available on `cause`.
+ *   and the underlying error is available on `cause`. In a browser it is also
+ *   what a page on an origin the deployment doesn't list gets: the browser
+ *   blocks the request and doesn't say why.
  * - Timeout → `name` is `"TimeoutError"`, `statusCode` is `0`. Whether the
  *   server acted on the request is unknown.
  *
@@ -49,11 +56,19 @@ export class NexxusError extends Error {
   /** HTTP status code of the response, or `0` if the request never completed. */
   public readonly statusCode: number;
 
-  constructor({ name, message, statusCode, cause }: NexxusErrorParams) {
+  /**
+   * Seconds to wait before sending the request again, from the response's
+   * `Retry-After` header, which a `429` (`TooManyRequestsException`) carries.
+   * On a `429` the route didn't run, so sending it again then is safe.
+   */
+  public readonly retryAfter?: number;
+
+  constructor({ name, message, statusCode, cause, retryAfter }: NexxusErrorParams) {
     super(message, cause !== undefined ? { cause } : undefined);
 
     this.name = name;
     this.statusCode = statusCode;
+    this.retryAfter = retryAfter;
   }
 }
 
@@ -76,10 +91,14 @@ export class NexxusTransportError extends Error {
  * The realtime transport closed while the client was registering on it, before
  * the worker answered. Branch on {@link code}, the WebSocket close code:
  *
+ * - `1009` — the `register` frame was over the transport's size limit: the
+ *   access token is too large, grown with the user's `details`. Retrying with
+ *   the same token fails the same way.
  * - `1013` — the server instance can't take connections right now; try again
  *   later, waiting longer each time.
  * - `4003` — another connection of the device took this one's place, over the
  *   application's connection cap. Don't retry automatically.
+ * - `4004` — the worker didn't answer `register` in time. Try again.
  */
 export class NexxusTransportClosedError extends Error {
   public readonly code: number;

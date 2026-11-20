@@ -1,9 +1,16 @@
 import { Command } from '../../Command';
 
 /**
- * Input for creating a new model instance
+ * Fields the server sets on every model it creates. The command refuses a body
+ * containing any of them before it's sent.
  */
-export interface CreateModelInput {
+const SERVER_SET_FIELDS = ['id', 'createdAt', 'updatedAt', 'version', 'appId', 'userId'] as const;
+
+/**
+ * Input for creating a new model instance. The fields the server sets are
+ * typed `never`, so a body carrying one doesn't compile.
+ */
+export interface CreateModelInput extends Partial<Record<(typeof SERVER_SET_FIELDS)[number], never>> {
   /**
    * Model type defined in the application schema
    * @example "task"
@@ -37,8 +44,14 @@ export interface CreateModelOutput {
  * accepted but fails to apply is retried for a few seconds, so its event can
  * arrive late; if it keeps failing, it's dropped and no event is published.
  *
- * The `userId` field is automatically added from the authenticated user.
- * System fields (`id`, `createdAt`, `updatedAt`, `appId`) are added automatically.
+ * The server sets `id`, `createdAt`, `updatedAt`, `version`, `appId` and
+ * `userId` itself — `userId` to the authenticated user. A body containing any
+ * of them throws here, before it's sent.
+ *
+ * The server refuses a field the model's schema doesn't declare, or a value of
+ * the wrong type, with `InvalidParametersException` (`400`); the reason is in
+ * the message. A body over the deployment's size limit (64 KiB unless it sets
+ * another) fails with `PayloadTooLargeException` (`413`).
  *
  * @example
  * ```typescript
@@ -53,12 +66,19 @@ export interface CreateModelOutput {
  *   dueDate: '2026-02-15T00:00:00.000Z'
  * });
  * const result = await client.send(command);
- * console.log(result.message); // "Model creation queued successfully"
+ * console.log(result.message); // "Model created successfully!"
  * ```
  */
 export class CreateModelCommand extends Command<CreateModelInput, CreateModelOutput> {
   constructor(input: CreateModelInput) {
     super(input, { authEnabled: true });
+
+    // Present means sent: JSON leaves out a field that is `undefined`.
+    const sent = SERVER_SET_FIELDS.filter(field => input[field] !== undefined);
+
+    if (sent.length > 0) {
+      throw new Error(`Field(s) "${sent.join('", "')}" are set by the server and can't be sent`);
+    }
   }
 
   public resolveRequest() {

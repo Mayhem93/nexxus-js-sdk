@@ -74,7 +74,8 @@ export interface LoggingConfig {
  * HTTP request metadata
  */
 export interface HttpRequest {
-  method: 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH';
+  /** The methods the API allows, cross-origin included. */
+  method: 'GET' | 'POST' | 'PUT' | 'DELETE';
   path: string;
   headers: Record<string, string>;
   body?: string;
@@ -623,6 +624,16 @@ export type TransportClientMessage =
  * - `4003` (`evicted`) — the device went over its application's connection
  *   cap, and this was its oldest connection. Not reconnected: the new
  *   connection would evict the device's next-oldest in turn.
+ * - `4004` (`register_timeout`) — the connection didn't register in time: 30
+ *   seconds unless the deployment sets otherwise. It closes the socket before
+ *   `register` is answered, so this surfaces as a `NexxusTransportClosedError`;
+ *   reconnect attempts give up sooner on their own, and keep trying.
+ * - `1009` (no reason) — a frame from the client was over the transport's size
+ *   limit, 16 KiB unless the deployment raises it. In practice the access
+ *   token, which grows with the user's `details`: sent in `register`, it
+ *   surfaces as a `NexxusTransportClosedError`; moved onto a live connection,
+ *   as a `disconnected`. Not reconnected: the next connection would send the
+ *   same token.
  * - `1012` (`service_restart`) — the server instance is shutting down, or can
  *   no longer deliver events. The client reconnects.
  * - `1013` (`try_again_later`) — the server instance can't take connections
@@ -647,10 +658,11 @@ export interface DisconnectedEvent extends TransportDisconnect {
   /**
    * Whether the client will reconnect on its own: `true` after the server or
    * the network dropped the connection; `false` after a close the client made,
-   * a logout (`4001`), an eviction (`4003`), or with `reconnect: false`.
+   * a logout (`4001`), an eviction (`4003`), a frame too large (`1009`), or
+   * with `reconnect: false`.
    *
-   * Reconnecting that stops because an attempt was closed with `4001` or
-   * `4003` is reported by one more `disconnected`, with `false`.
+   * Reconnecting that stops because an attempt was closed with `4001`, `4003`
+   * or `1009` is reported by one more `disconnected`, with `false`.
    */
   willReconnect: boolean;
 }

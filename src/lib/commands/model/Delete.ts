@@ -47,7 +47,7 @@ export interface DeleteModelOutput {
  *   type: 'task'
  * });
  * const result = await client.send(command);
- * console.log(result.message); // "Model deletion queued successfully"
+ * console.log(result.message); // "Model deleted successfully!"
  * ```
  */
 export class DeleteModelCommand extends Command<DeleteModelInput, DeleteModelOutput> {

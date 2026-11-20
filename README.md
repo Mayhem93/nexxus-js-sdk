@@ -16,6 +16,7 @@ Its headline feature is **realtime channels** — a subscription returns a local
 
 - **Node.js ≥ 24**, or a modern browser (no legacy support).
 - TypeScript 6+ if consuming the types.
+- In a browser on another origin than the API, the deployment has to list that origin. From one it doesn't list, the browser blocks every request without saying why, so each fails as a `NexxusError` named `NetworkError`.
 
 ## Installation
 
@@ -234,9 +235,9 @@ subscribe again. Each subscription returns a new `Channel`, so move your
 listeners onto it.
 
 It doesn't reconnect after a close you made (`disconnectTransport()`,
-`logout()`, `close()`), after a logout (`4001`) or after an eviction (`4003`),
-and it stops when the session ends; `willReconnect` on `disconnected` says
-which. After repeated `1013`s it waits longer between tries, up to 30 seconds.
+`logout()`, `close()`), after a logout (`4001`), an eviction (`4003`) or a
+token too large for the transport (`1009`), and it stops when the session ends;
+`willReconnect` on `disconnected` says which. After repeated `1013`s it waits longer between tries, up to 30 seconds.
 Calling `initTransport()` yourself takes over from a reconnect under way. To
 handle reconnecting yourself, pass `reconnect: false`.
 
@@ -247,6 +248,8 @@ The server closes with its own codes:
 | `4001` | `logged_out` | The device was logged out, closing every one of its connections. The client ends its session (`session_ended`) and doesn't reconnect. |
 | `4002` | `token_expired` | The connection's token expired before a newer one reached it. The client reconnects. |
 | `4003` | `evicted` | The device went over its application's connection cap, and this was its oldest connection. Not reconnected: the new connection would evict the next-oldest. |
+| `4004` | `register_timeout` | The connection didn't register in time — 30 seconds unless the deployment sets otherwise. It closes the socket before `register` is answered. Reconnect attempts give up sooner on their own, and keep trying. |
+| `1009` | — | A frame from the client was over the transport's size limit, 16 KiB unless the deployment raises it. In practice the access token, which grows with the user's `details`. Not reconnected: the next connection would send the same token. |
 | `1012` | `service_restart` | The server instance is shutting down, or lost its message queue. The client reconnects. |
 | `1013` | `try_again_later` | The server instance can't take connections right now; it closes a new socket before `register`. Reconnect attempts wait longer each time. |
 
@@ -258,7 +261,8 @@ the device no longer exists, `initTransport()` rejects with a
 `NexxusTransportError` and `session_ended` fires with `transport_rejected`.
 Branch on the error's `code`, never its message. If the connection closes
 before the worker answers, it rejects with a `NexxusTransportClosedError`,
-whose `code` is the close code — `1013` means try again later.
+whose `code` is the close code: `1013` means try again later, `4004` that the
+worker didn't answer in time, and `1009` that the access token is too large.
 
 ### Channels
 
@@ -302,6 +306,32 @@ the subscription feeding it.
 ### Versioning & resync
 
 Each model has a monotonically increasing `version`. The client applies an update only when it's exactly one ahead of the local copy. It fetches the current object instead when it sees a version gap, an update for an object not in its view, or an update it can't apply exactly, such as an `append` to a field that has no value yet. So a channel converges to the correct state even if events are missed or arrive out of order. Each fetch is logged under the `resync` label with a `reason` (`ResyncReason`): `not_in_channel`, `no_version`, `version_gap` or `patch_not_applied`.
+
+### Rate limits
+
+A deployment or an application can turn on rate limits. Each route then allows
+so many requests a minute, counted per user — per device on an application
+without authentication, and per IP address for a request without a token, such
+as a sign-in. A request over the limit fails with a `NexxusError` named
+`TooManyRequestsException` (`429`), whose `retryAfter` is the number of seconds
+until the count starts over:
+
+```ts
+try {
+  await client.send(command);
+} catch (err) {
+  if (err instanceof NexxusError && err.name === 'TooManyRequestsException') {
+    showTryAgainIn(err.retryAfter); // seconds
+  }
+}
+```
+
+The route didn't run, so sending the request again after that is safe. The
+client doesn't do it for you: a resend fired by a timer could land after
+requests you've made since.
+
+Re-subscribing after `reconnected` sends one `SubscribeCommand` per channel,
+and subscribing has a limit of its own (a base of 60 a minute).
 
 ### Logging
 

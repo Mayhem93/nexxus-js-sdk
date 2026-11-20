@@ -38,6 +38,11 @@ export interface UpdateUserOutput {
  * authenticates again.** `/user/me` reads the token, not the database, and the
  * token was minted before this patch.
  *
+ * Details travel inside every access token, so the next token grows with them.
+ * Keep them small: the realtime transport closes a connection whose frame is
+ * over its size limit (16 KiB unless the deployment raises it) with `1009`,
+ * and the client doesn't reconnect a token that outgrew it.
+ *
  * @example
  * ```typescript
  * const result = await client.send(new UpdateUserCommand({

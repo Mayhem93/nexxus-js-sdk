@@ -89,6 +89,13 @@ export class NexxusClient extends EventEmitter {
    */
   private static readonly CLOSE_EVICTED = 4003;
 
+  /**
+   * Close code for a frame from the client over the transport's size limit —
+   * in practice an access token grown with the user's `details`. Never
+   * reconnected: the next connection would send the same token.
+   */
+  private static readonly CLOSE_MESSAGE_TOO_BIG = 1009;
+
   /** Close code for a server instance that can't take connections right now. */
   private static readonly CLOSE_TRY_AGAIN_LATER = 1013;
 
@@ -1157,14 +1164,17 @@ export class NexxusClient extends EventEmitter {
 
   /**
    * Whether a connection the server or the network closed with `code` is
-   * reconnected. Not after a logout, which ended the session, nor after an
+   * reconnected. Not after a logout, which ended the session; nor after an
    * eviction: the new connection would evict the device's next-oldest in turn,
-   * and the connections of one device would take turns evicting each other.
+   * and the connections of one device would take turns evicting each other;
+   * nor after a frame too large, since the next connection would send the
+   * same token.
    */
   private reconnectsAfter(code: number): boolean {
     return this.config.reconnect !== false
       && code !== NexxusClient.CLOSE_LOGGED_OUT
-      && code !== NexxusClient.CLOSE_EVICTED;
+      && code !== NexxusClient.CLOSE_EVICTED
+      && code !== NexxusClient.CLOSE_MESSAGE_TOO_BIG;
   }
 
   /**
@@ -1239,12 +1249,12 @@ export class NexxusClient extends EventEmitter {
 
   /**
    * After a failed attempt, try again later — or stop, when the session ended
-   * or the server said not to come back.
+   * or the attempt closed with a code that is never reconnected.
    */
   private afterFailedReconnect(error: unknown): void {
     const closedWith = error instanceof NexxusTransportClosedError ? error.code : undefined;
 
-    if (closedWith === NexxusClient.CLOSE_LOGGED_OUT || closedWith === NexxusClient.CLOSE_EVICTED) {
+    if (closedWith !== undefined && !this.reconnectsAfter(closedWith)) {
       const { code, reason } = error as NexxusTransportClosedError;
 
       this.stopReconnecting();
